@@ -2,8 +2,16 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="datastore/auth_tokens.preferences_pb" />
+        <exclude domain="file" path="datastore/sync_settings.preferences_pb" />
+        <exclude domain="database" path="vaultsync.db" />
+        <exclude domain="database" path="vaultsync.db-wal" />
+        <exclude domain="database" path="vaultsync.db-shm" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="datastore/auth_tokens.preferences_pb" />
+        <exclude domain="file" path="datastore/sync_settings.preferences_pb" />
+        <exclude domain="database" path="vaultsync.db" />
+        <exclude domain="database" path="vaultsync.db-wal" />
+        <exclude domain="database" path="vaultsync.db-shm" />
     </device-transfer>
 </data-extraction-rules>

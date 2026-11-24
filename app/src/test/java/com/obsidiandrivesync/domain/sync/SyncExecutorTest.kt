@@ -7,10 +7,12 @@ import com.obsidiandrivesync.domain.model.SyncConfig
 import com.obsidiandrivesync.domain.model.SyncPhase
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
@@ -132,6 +134,91 @@ class SyncExecutorTest {
         assertTrue(baseline.getAllEntries().isEmpty())
     }
 
+    @Test
+    fun `re-uploads modified local file into newly created remote folder when remote folder was deleted`() = runTest {
+        val local = FakeLocalGateway().apply {
+            dirs += "Projects"
+            files["Projects/note.md"] = FakeLocalEntry("edited-locally".toByteArray(), 5_000L)
+        }
+        val remote = FakeRemoteGateway()
+        val baseline = FakeBaselineStore().apply {
+            upsert(BaselineEntry("Projects", "old_deleted_dir_id", true, null, 1_000L, 0L, 1_000L, 1_000L))
+            upsert(BaselineEntry("Projects/note.md", "old_file_id", false, md5("base"), 1_000L, 4L, 1_000L, 1_000L))
+        }
+
+        val executor = SyncExecutor(local, remote, baseline, clockMs = { 10_000L })
+        val summary = executor.execute(
+            SyncConfig(
+                localVaultPath = "/fake",
+                driveFolderId = "root",
+                driveFolderName = "Vault",
+                ignorePatterns = IgnoreRuleMatcher.DEFAULT_PATTERNS
+            )
+        )
+
+        assertEquals(SyncPhase.COMPLETED, summary.status)
+        assertEquals(1, summary.uploadedCount)
+        assertTrue(remote.createdFolders.contains("Projects"))
+        val uploadedEntry = remote.entries["Projects/note.md"]!!
+        assertTrue(uploadedEntry.parentId != "old_deleted_dir_id")
+    }
+
+    @Test
+    fun `preserves partial counts and conflicts in summary when later action fails`() = runTest {
+        val local = FakeLocalGateway().apply {
+            files["a_conflict.md"] = FakeLocalEntry("local".toByteArray(), 5_000L)
+            files["b_fail.md"] = FakeLocalEntry("fail".toByteArray(), 5_000L)
+        }
+        val remote = FakeRemoteGateway().apply {
+            entries["a_conflict.md"] = FakeRemoteEntry("r1", "root", "remote".toByteArray(), 6_000L)
+            failOnUploadPath = "b_fail.md"
+        }
+        val baseline = FakeBaselineStore().apply {
+            upsert(BaselineEntry("a_conflict.md", "r1", false, md5("base"), 1_000L, 4L, 1_000L, 1_000L))
+        }
+
+        val executor = SyncExecutor(local, remote, baseline, clockMs = { 1_795_486_530_000L })
+        val summary = executor.execute(
+            SyncConfig(
+                localVaultPath = "/fake",
+                driveFolderId = "root",
+                driveFolderName = "Vault",
+                ignorePatterns = IgnoreRuleMatcher.DEFAULT_PATTERNS
+            )
+        )
+
+        assertEquals(SyncPhase.FAILED, summary.status)
+        assertEquals(1, summary.downloadedCount)
+        assertEquals(1, summary.uploadedCount)
+        assertEquals(1, summary.conflictCount)
+        assertEquals(1, summary.conflicts.size)
+    }
+
+    @Test
+    fun `keeps baseline entry when non-empty local directory deletion returns false`() = runTest {
+        val local = FakeLocalGateway().apply {
+            dirs += "LockedDir"
+            keepDirOnDelete = true
+        }
+        val remote = FakeRemoteGateway()
+        val baseline = FakeBaselineStore().apply {
+            upsert(BaselineEntry("LockedDir", "d1", true, null, 1_000L, 0L, 1_000L, 1_000L))
+        }
+
+        val executor = SyncExecutor(local, remote, baseline, clockMs = { 5_000L })
+        val summary = executor.execute(
+            SyncConfig(
+                localVaultPath = "/fake",
+                driveFolderId = "root",
+                driveFolderName = "Vault",
+                ignorePatterns = IgnoreRuleMatcher.DEFAULT_PATTERNS
+            )
+        )
+
+        assertEquals(SyncPhase.COMPLETED, summary.status)
+        assertFalse(baseline.getAllEntries().isEmpty())
+    }
+
     private fun md5(s: String): String {
         val digest = MessageDigest.getInstance("MD5").digest(s.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
@@ -145,6 +232,7 @@ class SyncExecutorTest {
         val dirs = linkedSetOf<String>()
         val deletedToTrashPaths = mutableListOf<String>()
         var lastPurgedRetentionDays: Int? = null
+        var keepDirOnDelete: Boolean = false
 
         override suspend fun listFiles(ignoreMatcher: IgnoreRuleMatcher): List<LocalFileItem> {
             return dirs.map { LocalFileItem(it, true, 0L, 0L) } +
@@ -185,11 +273,17 @@ class SyncExecutorTest {
             return LocalFileItem(toRelativePath, false, entry.bytes.size.toLong(), entry.modifiedMs)
         }
 
-        override suspend fun deleteItem(relativePath: String, isDirectory: Boolean, moveToTrash: Boolean) {
+        override suspend fun deleteItem(relativePath: String, isDirectory: Boolean, moveToTrash: Boolean): Boolean {
+            if (isDirectory) {
+                if (keepDirOnDelete) return false
+                dirs.remove(relativePath)
+                return true
+            }
             files.remove(relativePath)
-            if (!isDirectory && moveToTrash) {
+            if (moveToTrash) {
                 deletedToTrashPaths += relativePath
             }
+            return true
         }
 
         override suspend fun purgeExpiredTrash(retentionDays: Int): Int {
@@ -202,6 +296,7 @@ class SyncExecutorTest {
         val entries = linkedMapOf<String, FakeRemoteEntry>()
         val createdFolders = mutableListOf<String>()
         val trashedIds = mutableListOf<String>()
+        var failOnUploadPath: String? = null
         private var idSeq = 100
 
         override suspend fun listFolderTree(rootFolderId: String, ignoreMatcher: IgnoreRuleMatcher): RemoteTreeResult {
@@ -227,9 +322,9 @@ class SyncExecutorTest {
             return RemoteFileItem(id, parentId, name, name, true, 0L, 1_000L, null)
         }
 
-        override suspend fun downloadFile(driveFileId: String, outputStream: OutputStream) {
+        override suspend fun downloadFile(driveFileId: String, onStream: suspend (InputStream) -> Unit) {
             val entry = entries.values.first { it.id == driveFileId }
-            outputStream.write(entry.content)
+            onStream(ByteArrayInputStream(entry.content))
         }
 
         override suspend fun uploadNewFile(
@@ -240,6 +335,9 @@ class SyncExecutorTest {
             sizeBytes: Long,
             mimeType: String
         ): RemoteFileItem {
+            if (relativePath == failOnUploadPath) {
+                throw IOException("Simulated upload failure for $relativePath")
+            }
             val bytes = localGateway.openInputStream(relativePath).use { it.readBytes() }
             val id = "file_${++idSeq}"
             entries[relativePath] = FakeRemoteEntry(id, parentId, bytes, 10_000L)

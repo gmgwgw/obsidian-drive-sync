@@ -151,5 +151,6 @@ data class SyncPlan(
     val actions: List<SyncAction>,
     val deletionGuardTriggered: Boolean = false,
     val pendingDeletionCount: Int = 0,
-    val totalBaselineFiles: Int = 0
+    val totalBaselineFiles: Int = 0,
+    val warnings: List<String> = emptyList()
 )

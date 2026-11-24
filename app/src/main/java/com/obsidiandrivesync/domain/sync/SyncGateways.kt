@@ -17,14 +17,14 @@ interface LocalVaultGateway {
     suspend fun writeFileAtomically(relativePath: String, modifiedTimeMs: Long, writer: suspend (java.io.OutputStream) -> Unit)
     fun openInputStream(relativePath: String): java.io.InputStream
     suspend fun renameFile(fromRelativePath: String, toRelativePath: String): LocalFileItem
-    suspend fun deleteItem(relativePath: String, isDirectory: Boolean, moveToTrash: Boolean)
+    suspend fun deleteItem(relativePath: String, isDirectory: Boolean, moveToTrash: Boolean): Boolean
     suspend fun purgeExpiredTrash(retentionDays: Int): Int
 }
 
 interface RemoteDriveGateway {
     suspend fun listFolderTree(rootFolderId: String, ignoreMatcher: IgnoreRuleMatcher): RemoteTreeResult
     suspend fun createFolder(parentId: String, name: String): RemoteFileItem
-    suspend fun downloadFile(driveFileId: String, outputStream: java.io.OutputStream)
+    suspend fun downloadFile(driveFileId: String, onStream: suspend (java.io.InputStream) -> Unit)
     suspend fun uploadNewFile(
         parentId: String,
         name: String,

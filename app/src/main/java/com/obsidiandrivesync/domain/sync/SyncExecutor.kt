@@ -30,6 +30,12 @@ class SyncExecutor(
     ): SyncSummary {
         val startedAt = clockMs()
         val ignoreMatcher = IgnoreRuleMatcher(config.ignorePatterns)
+        var uploaded = 0
+        var downloaded = 0
+        var deletedLocal = 0
+        var deletedRemote = 0
+        val conflicts = mutableListOf<ConflictItem>()
+        val allWarnings = mutableListOf<String>()
 
         try {
             currentCoroutineContext().ensureActive()
@@ -39,6 +45,7 @@ class SyncExecutor(
             currentCoroutineContext().ensureActive()
             onProgress(SyncProgress(SyncPhase.SCANNING_REMOTE, message = "Google Drive をスキャン中..."))
             val remoteTree = remoteGateway.listFolderTree(config.driveFolderId, ignoreMatcher)
+            allWarnings += remoteTree.skippedWarnings
 
             currentCoroutineContext().ensureActive()
             onProgress(SyncProgress(SyncPhase.PLANNING, message = "変更内容を解析中..."))
@@ -52,6 +59,7 @@ class SyncExecutor(
                 allowLargeDeletionOnce = config.allowLargeDeletionOnce,
                 localMd5Provider = { path -> localGateway.computeMd5(path) }
             )
+            allWarnings += plan.warnings
 
             if (plan.deletionGuardTriggered) {
                 onProgress(
@@ -64,24 +72,18 @@ class SyncExecutor(
                     startedAtMs = startedAt,
                     finishedAtMs = clockMs(),
                     status = SyncPhase.DELETION_GUARD_BLOCKED,
-                    skippedWarnings = remoteTree.skippedWarnings,
+                    skippedWarnings = allWarnings,
                     pendingDeletionCount = plan.pendingDeletionCount,
                     totalBaselineFiles = plan.totalBaselineFiles,
                     errorMessage = "大量の削除（${plan.pendingDeletionCount}/${plan.totalBaselineFiles} 件）が検出されたため安全装置が作動しました。"
                 )
             }
 
-            // Track folder relativePath -> driveFileId so nested uploads know their parent folder ID.
+            // Track live folder relativePath -> driveFileId so nested uploads know their parent folder ID.
             val remoteFolderIds = mutableMapOf<String, String>()
             remoteFolderIds[""] = config.driveFolderId
-            baseline.filter { it.isDirectory }.forEach { remoteFolderIds[it.relativePath] = it.driveFileId }
             remoteTree.items.filter { it.isDirectory }.forEach { remoteFolderIds[it.relativePath] = it.driveFileId }
 
-            var uploaded = 0
-            var downloaded = 0
-            var deletedLocal = 0
-            var deletedRemote = 0
-            val conflicts = mutableListOf<ConflictItem>()
             val totalSteps = plan.actions.size
 
             plan.actions.forEachIndexed { index, action ->
@@ -143,14 +145,16 @@ class SyncExecutor(
                             remoteFolderIds = remoteFolderIds
                         )
                         val fileName = action.relativePath.substringAfterLast('/')
+                        val currentLocal = localGateway.getLocalItem(action.relativePath) ?: action.localItem
                         val uploadedRemote = remoteGateway.uploadNewFile(
                             parentId = parentId,
                             name = fileName,
                             relativePath = action.relativePath,
                             localGateway = localGateway,
-                            sizeBytes = action.localItem.sizeBytes,
+                            sizeBytes = currentLocal.sizeBytes,
                             mimeType = guessMimeType(fileName)
                         )
+                        val localAfter = localGateway.getLocalItem(action.relativePath) ?: currentLocal
                         val md5 = uploadedRemote.md5Checksum ?: localGateway.computeMd5(action.relativePath)
                         baselineStore.upsert(
                             BaselineEntry(
@@ -158,8 +162,8 @@ class SyncExecutor(
                                 driveFileId = uploadedRemote.driveFileId,
                                 isDirectory = false,
                                 md5Checksum = md5,
-                                localLastModifiedMs = action.localItem.lastModifiedMs,
-                                localSizeBytes = action.localItem.sizeBytes,
+                                localLastModifiedMs = localAfter.lastModifiedMs,
+                                localSizeBytes = localAfter.sizeBytes,
                                 remoteModifiedTimeMs = uploadedRemote.modifiedTimeMs,
                                 lastSyncedAtMs = clockMs()
                             )
@@ -169,13 +173,15 @@ class SyncExecutor(
 
                     is SyncAction.UploadUpdate -> {
                         val fileName = action.relativePath.substringAfterLast('/')
+                        val currentLocal = localGateway.getLocalItem(action.relativePath) ?: action.localItem
                         val updatedRemote = remoteGateway.updateFileContent(
                             driveFileId = action.driveFileId,
                             relativePath = action.relativePath,
                             localGateway = localGateway,
-                            sizeBytes = action.localItem.sizeBytes,
+                            sizeBytes = currentLocal.sizeBytes,
                             mimeType = guessMimeType(fileName)
                         )
+                        val localAfter = localGateway.getLocalItem(action.relativePath) ?: currentLocal
                         val md5 = updatedRemote.md5Checksum ?: localGateway.computeMd5(action.relativePath)
                         baselineStore.upsert(
                             BaselineEntry(
@@ -183,8 +189,8 @@ class SyncExecutor(
                                 driveFileId = updatedRemote.driveFileId,
                                 isDirectory = false,
                                 md5Checksum = md5,
-                                localLastModifiedMs = action.localItem.lastModifiedMs,
-                                localSizeBytes = action.localItem.sizeBytes,
+                                localLastModifiedMs = localAfter.lastModifiedMs,
+                                localSizeBytes = localAfter.sizeBytes,
                                 remoteModifiedTimeMs = updatedRemote.modifiedTimeMs,
                                 lastSyncedAtMs = clockMs()
                             )
@@ -205,7 +211,12 @@ class SyncExecutor(
                     is SyncAction.ResolveConflict -> {
                         val now = clockMs()
                         val formattedTs = CONFLICT_TS_FORMATTER.format(Instant.ofEpochMilli(now))
-                        val conflictPath = SyncPlanner.buildConflictPath(action.relativePath, formattedTs)
+                        var conflictPath = SyncPlanner.buildConflictPath(action.relativePath, formattedTs)
+                        var suffix = 2
+                        while (localGateway.getLocalItem(conflictPath) != null) {
+                            conflictPath = SyncPlanner.buildConflictPath(action.relativePath, "$formattedTs ($suffix)")
+                            suffix++
+                        }
 
                         // 1. Preserve local edits under a conflict copy name
                         val conflictLocalItem = localGateway.renameFile(action.relativePath, conflictPath)
@@ -258,13 +269,15 @@ class SyncExecutor(
                     }
 
                     is SyncAction.DeleteLocal -> {
-                        localGateway.deleteItem(
+                        val deleted = localGateway.deleteItem(
                             relativePath = action.relativePath,
                             isDirectory = action.isDirectory,
                             moveToTrash = config.moveRemoteDeletedToTrash
                         )
-                        baselineStore.deleteByPath(action.relativePath)
-                        if (!action.isDirectory) deletedLocal++
+                        if (deleted) {
+                            baselineStore.deleteByPath(action.relativePath)
+                            if (!action.isDirectory) deletedLocal++
+                        }
                     }
 
                     is SyncAction.RecordBaselineOnly -> {
@@ -305,7 +318,7 @@ class SyncExecutor(
                 deletedRemoteCount = deletedRemote,
                 conflictCount = conflicts.size,
                 trashPurgedCount = trashPurged,
-                skippedWarnings = remoteTree.skippedWarnings,
+                skippedWarnings = allWarnings,
                 conflicts = conflicts
             )
         } catch (ce: CancellationException) {
@@ -318,14 +331,24 @@ class SyncExecutor(
                 startedAtMs = startedAt,
                 finishedAtMs = clockMs(),
                 status = phase,
+                uploadedCount = uploaded,
+                downloadedCount = downloaded,
+                deletedLocalCount = deletedLocal,
+                deletedRemoteCount = deletedRemote,
+                conflictCount = conflicts.size,
+                skippedWarnings = allWarnings,
+                conflicts = conflicts,
                 errorMessage = e.message ?: e::class.java.simpleName
             )
         }
     }
 
     private suspend fun downloadToLocalAndRecord(relativePath: String, remoteItem: RemoteFileItem) {
-        localGateway.writeFileAtomically(relativePath, remoteItem.modifiedTimeMs) { output ->
-            remoteGateway.downloadFile(remoteItem.driveFileId, output)
+        remoteGateway.downloadFile(remoteItem.driveFileId) { inputStream ->
+            localGateway.writeFileAtomically(relativePath, remoteItem.modifiedTimeMs) { output ->
+                inputStream.copyTo(output, bufferSize = 32 * 1024)
+                output.flush()
+            }
         }
         val localAfter = localGateway.getLocalItem(relativePath)
         val md5 = remoteItem.md5Checksum ?: localGateway.computeMd5(relativePath)
