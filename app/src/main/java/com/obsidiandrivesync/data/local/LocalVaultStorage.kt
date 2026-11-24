@@ -10,6 +10,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
@@ -118,19 +120,18 @@ class LocalVaultStorage(
             parent.mkdirs()
         }
 
-        val tempFile = File(parent, ".${target.name}.${IgnoreRuleMatcher.TEMP_SYNC_FILE_NAME}")
+        val tempFile = File(parent, ".${target.name}${IgnoreRuleMatcher.TEMP_SYNC_FILE_NAME}")
         try {
             FileOutputStream(tempFile).use { fos ->
                 writer(fos)
                 fos.flush()
                 fos.fd.sync()
             }
-            if (target.exists() && !target.delete()) {
-                throw IllegalStateException("既存ファイルの置換に失敗しました: $relativePath")
-            }
-            if (!tempFile.renameTo(target)) {
-                throw IllegalStateException("一時ファイルのリネームに失敗しました: $relativePath")
-            }
+            Files.move(
+                tempFile.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING
+            )
             if (modifiedTimeMs > 0L) {
                 target.setLastModified(modifiedTimeMs)
             }
@@ -161,17 +162,18 @@ class LocalVaultStorage(
             )
         }
 
-    override suspend fun deleteItem(relativePath: String, isDirectory: Boolean, moveToTrash: Boolean) =
+    override suspend fun deleteItem(relativePath: String, isDirectory: Boolean, moveToTrash: Boolean): Boolean =
         withContext(Dispatchers.IO) {
             val target = resolveSafe(relativePath)
-            if (!target.exists()) return@withContext
+            if (!target.exists()) return@withContext true
 
             if (isDirectory) {
                 // Only remove directory if empty when deleting directories safely
-                if (target.listFiles().isNullOrEmpty()) {
-                    target.delete()
+                return@withContext if (target.listFiles().isNullOrEmpty()) {
+                    target.delete() || !target.exists()
+                } else {
+                    false
                 }
-                return@withContext
             }
 
             if (moveToTrash) {
@@ -179,6 +181,7 @@ class LocalVaultStorage(
             } else {
                 target.delete()
             }
+            !target.exists()
         }
 
     private fun moveFileToObsidianTrash(source: File, relativePath: String) {

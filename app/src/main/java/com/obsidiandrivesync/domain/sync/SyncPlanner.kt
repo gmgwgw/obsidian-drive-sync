@@ -34,28 +34,76 @@ class SyncPlanner(
         val deleteFileActions = mutableListOf<SyncAction>()
         val deleteDirActions = mutableListOf<SyncAction>()
         val cleanupActions = mutableListOf<SyncAction>()
+        val warnings = mutableListOf<String>()
+
+        val collidingPrefixes = mutableListOf<String>()
+        val filePaths = mutableListOf<String>()
+        val dirPaths = mutableListOf<String>()
 
         for (path in allPaths) {
+            if (collidingPrefixes.any { prefix -> path == prefix || path.startsWith("$prefix/") }) {
+                continue
+            }
+
             val base = baselineMap[path]
             val local = localMap[path]
             val remote = remoteMap[path]
 
-            val isDirectory = local?.isDirectory ?: remote?.isDirectory ?: base?.isDirectory ?: false
-
-            if (isDirectory) {
-                planDirectory(path, base, local, remote, dirCreateActions, deleteDirActions, cleanupActions)
-            } else {
-                planFile(
-                    path = path,
-                    base = base,
-                    local = local,
-                    remote = remote,
-                    localMd5Provider = localMd5Provider,
-                    fileActions = fileActions,
-                    deleteFileActions = deleteFileActions,
-                    cleanupActions = cleanupActions
-                )
+            if (local != null && remote != null && local.isDirectory != remote.isDirectory) {
+                collidingPrefixes += path
+                warnings += "ファイルとフォルダの型が衝突したためスキップ: $path"
+                continue
             }
+
+            val isDirectory = local?.isDirectory ?: remote?.isDirectory ?: base?.isDirectory ?: false
+            if (isDirectory) {
+                dirPaths += path
+            } else {
+                filePaths += path
+            }
+        }
+
+        // 1. Plan files first and collect surviving paths so parent directories are protected from deletion.
+        val survivingFilePaths = mutableListOf<String>()
+        for (path in filePaths) {
+            val base = baselineMap[path]?.takeIf { !it.isDirectory }
+            val local = localMap[path]
+            val remote = remoteMap[path]
+            val survives = planFile(
+                path = path,
+                base = base,
+                local = local,
+                remote = remote,
+                localMd5Provider = localMd5Provider,
+                fileActions = fileActions,
+                deleteFileActions = deleteFileActions,
+                cleanupActions = cleanupActions
+            )
+            if (survives) {
+                survivingFilePaths += path
+            }
+        }
+
+        val protectedDirs = mutableSetOf<String>()
+        for (filePath in survivingFilePaths) {
+            addAncestorDirs(filePath, protectedDirs)
+        }
+
+        // 2. Plan directories deepest-first so nested surviving directories also protect their ancestors.
+        for (path in dirPaths.sortedByDescending { it.count { ch -> ch == '/' } }) {
+            val base = baselineMap[path]?.takeIf { it.isDirectory }
+            val local = localMap[path]
+            val remote = remoteMap[path]
+            planDirectory(
+                path = path,
+                base = base,
+                local = local,
+                remote = remote,
+                protectedDirs = protectedDirs,
+                dirCreateActions = dirCreateActions,
+                deleteDirActions = deleteDirActions,
+                cleanupActions = cleanupActions
+            )
         }
 
         // Order directory creation shallowest-first, deletions deepest-first.
@@ -76,7 +124,8 @@ class SyncPlanner(
                 actions = emptyList(),
                 deletionGuardTriggered = true,
                 pendingDeletionCount = pendingDeletionCount,
-                totalBaselineFiles = totalBaselineFiles
+                totalBaselineFiles = totalBaselineFiles,
+                warnings = warnings
             )
         }
 
@@ -90,8 +139,17 @@ class SyncPlanner(
             actions = orderedActions,
             deletionGuardTriggered = false,
             pendingDeletionCount = pendingDeletionCount,
-            totalBaselineFiles = totalBaselineFiles
+            totalBaselineFiles = totalBaselineFiles,
+            warnings = warnings
         )
+    }
+
+    private fun addAncestorDirs(path: String, out: MutableSet<String>) {
+        var slashIdx = path.indexOf('/')
+        while (slashIdx >= 0) {
+            out += path.substring(0, slashIdx)
+            slashIdx = path.indexOf('/', slashIdx + 1)
+        }
     }
 
     private fun planDirectory(
@@ -99,6 +157,7 @@ class SyncPlanner(
         base: BaselineEntry?,
         local: LocalFileItem?,
         remote: RemoteFileItem?,
+        protectedDirs: MutableSet<String>,
         dirCreateActions: MutableList<SyncAction>,
         deleteDirActions: MutableList<SyncAction>,
         cleanupActions: MutableList<SyncAction>
@@ -106,24 +165,43 @@ class SyncPlanner(
         when {
             base == null && local != null && remote == null -> {
                 dirCreateActions += SyncAction.CreateRemoteDir(path, local)
+                protectedDirs += path
+                addAncestorDirs(path, protectedDirs)
             }
             base == null && local == null && remote != null -> {
                 dirCreateActions += SyncAction.CreateLocalDir(path, remote)
+                protectedDirs += path
+                addAncestorDirs(path, protectedDirs)
             }
             base == null && local != null && remote != null -> {
                 dirCreateActions += SyncAction.RecordBaselineOnly(path, local, remote)
+                protectedDirs += path
+                addAncestorDirs(path, protectedDirs)
             }
             base != null && local != null && remote != null -> {
-                // Both exist; no action needed unless metadata needs sync.
+                protectedDirs += path
+                addAncestorDirs(path, protectedDirs)
             }
             base != null && local == null && remote != null -> {
-                deleteDirActions += SyncAction.DeleteRemote(path, remote.driveFileId, isDirectory = true)
+                if (path in protectedDirs) {
+                    dirCreateActions += SyncAction.CreateLocalDir(path, remote)
+                    addAncestorDirs(path, protectedDirs)
+                } else {
+                    deleteDirActions += SyncAction.DeleteRemote(path, remote.driveFileId, isDirectory = true)
+                }
             }
             base != null && local != null && remote == null -> {
-                deleteDirActions += SyncAction.DeleteLocal(path, isDirectory = true)
+                if (path in protectedDirs) {
+                    dirCreateActions += SyncAction.CreateRemoteDir(path, local)
+                    addAncestorDirs(path, protectedDirs)
+                } else {
+                    deleteDirActions += SyncAction.DeleteLocal(path, isDirectory = true)
+                }
             }
             base != null && local == null && remote == null -> {
-                cleanupActions += SyncAction.CleanupBaseline(path)
+                if (path !in protectedDirs) {
+                    cleanupActions += SyncAction.CleanupBaseline(path)
+                }
             }
         }
     }
@@ -137,14 +215,16 @@ class SyncPlanner(
         fileActions: MutableList<SyncAction>,
         deleteFileActions: MutableList<SyncAction>,
         cleanupActions: MutableList<SyncAction>
-    ) {
-        when {
+    ): Boolean {
+        return when {
             // 1. Not in baseline
             base == null && local != null && remote == null -> {
                 fileActions += SyncAction.UploadNew(path, local)
+                true
             }
             base == null && local == null && remote != null -> {
                 fileActions += SyncAction.DownloadNew(path, remote)
+                true
             }
             base == null && local != null && remote != null -> {
                 val localMd5 = localMd5Provider(path)
@@ -153,6 +233,7 @@ class SyncPlanner(
                 } else {
                     fileActions += SyncAction.ResolveConflict(path, local, remote)
                 }
+                true
             }
 
             // 2. Both exist & in baseline
@@ -177,6 +258,7 @@ class SyncPlanner(
                         }
                     }
                 }
+                true
             }
 
             // 3. Deleted locally, still on remote
@@ -184,8 +266,10 @@ class SyncPlanner(
                 if (isRemoteChanged(base, remote)) {
                     // Remote was modified after baseline: preserve remote edit instead of deleting.
                     fileActions += SyncAction.DownloadNew(path, remote)
+                    true
                 } else {
                     deleteFileActions += SyncAction.DeleteRemote(path, remote.driveFileId, isDirectory = false)
+                    false
                 }
             }
 
@@ -194,15 +278,20 @@ class SyncPlanner(
                 if (isLocalChanged(base, local, localMd5Provider)) {
                     // Local was modified after baseline: preserve local edit by re-uploading.
                     fileActions += SyncAction.UploadNew(path, local)
+                    true
                 } else {
                     deleteFileActions += SyncAction.DeleteLocal(path, isDirectory = false)
+                    false
                 }
             }
 
             // 5. Deleted on both sides
             base != null && local == null && remote == null -> {
                 cleanupActions += SyncAction.CleanupBaseline(path)
+                false
             }
+
+            else -> false
         }
     }
 

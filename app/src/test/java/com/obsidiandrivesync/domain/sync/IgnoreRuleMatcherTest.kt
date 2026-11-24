@@ -34,4 +34,13 @@ class IgnoreRuleMatcherTest {
         assertTrue(matcher.isIgnored("Sub/.DS_Store"))
         assertFalse(matcher.isIgnored("Notes/temp.md"))
     }
+
+    @Test
+    fun `trailing slash directory rule matches directory and nested files`() {
+        val matcher = IgnoreRuleMatcher(listOf("Private/"))
+        assertTrue(matcher.isIgnored("Private", isDirectory = true))
+        assertTrue(matcher.isIgnored("Private/secret.md"))
+        assertTrue(matcher.isIgnored("Private/Nested/deep.md"))
+        assertFalse(matcher.isIgnored("Public/note.md"))
+    }
 }

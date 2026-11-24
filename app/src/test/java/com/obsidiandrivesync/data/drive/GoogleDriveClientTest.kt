@@ -5,14 +5,17 @@ import com.obsidiandrivesync.domain.sync.IgnoreRuleMatcher
 import kotlinx.coroutines.test.runTest
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import mockwebserver3.SocketEffect
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.util.concurrent.atomic.AtomicInteger
 
 class GoogleDriveClientTest {
 
@@ -97,6 +100,74 @@ class GoogleDriveClientTest {
         assertEquals("f_new", paths["Note.md"]?.driveFileId)
         assertEquals("f_daily", paths["Daily/today.md"]?.driveFileId)
         assertEquals(2, result.skippedWarnings.size)
+        val dupWarning = result.skippedWarnings.first { it.contains("Note.md") }
+        assertTrue(dupWarning.contains("(Note.md)"))
+        assertFalse(dupWarning.contains("(/Note.md)"))
+    }
+
+    @Test
+    fun `downloadFile retries cleanly on truncated stream without appending partial bytes`() = runTest {
+        val vaultDir = tempFolder.newFolder("vault_dl")
+        val storage = LocalVaultStorage(vaultRootPathProvider = { vaultDir.absolutePath })
+
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("partial-")
+                .setHeader("Content-Length", "100")
+                .onResponseEnd(SocketEffect.CloseSocket())
+                .build()
+        )
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("complete-content")
+                .build()
+        )
+
+        client.downloadFile("f_dl") { stream ->
+            storage.writeFileAtomically("downloaded.md", 1_700_000_000_000L) { out ->
+                stream.copyTo(out)
+                out.flush()
+            }
+        }
+
+        assertEquals(2, server.requestCount)
+        assertEquals("complete-content", storage.openInputStream("downloaded.md").bufferedReader().readText())
+    }
+
+    @Test
+    fun `refreshes auth token on 401 even after a 503 retry`() = runTest {
+        val refreshCalls = AtomicInteger(0)
+        val retryingClient = GoogleDriveClient(
+            httpClient = OkHttpClient(),
+            tokenProvider = { forceRefresh ->
+                if (forceRefresh) {
+                    refreshCalls.incrementAndGet()
+                    "fresh_token"
+                } else {
+                    "stale_token"
+                }
+            },
+            baseApiUrl = server.url("/drive/v3").toString(),
+            baseUploadUrl = server.url("/upload/drive/v3").toString()
+        )
+
+        server.enqueue(MockResponse.Builder().code(503).build())
+        server.enqueue(MockResponse.Builder().code(401).build())
+        server.enqueue(MockResponse.Builder().code(200).body("""{"files":[]}""").build())
+
+        val result = retryingClient.listFolderTree("root_id", IgnoreRuleMatcher(emptyList()))
+        assertTrue(result.items.isEmpty())
+        assertEquals(1, refreshCalls.get())
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun `trashFile ignores 404 when file was already deleted`() = runTest {
+        server.enqueue(MockResponse.Builder().code(404).body("""{"error":{"code":404}}""").build())
+        client.trashFile("missing_id")
+        assertEquals(1, server.requestCount)
     }
 
     @Test

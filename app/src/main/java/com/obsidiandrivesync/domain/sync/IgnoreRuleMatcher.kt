@@ -82,8 +82,8 @@ class IgnoreRuleMatcher(patterns: List<String>) {
                     }
                 }
             }
-            // If a directory rule like ".trash" is given without /**, match both exact dir and contents.
-            if (!rawPattern.contains('*') && !rawPattern.endsWith('/')) {
+            // If a directory rule like ".trash" or "Private/" is given without *, match both exact dir and contents.
+            if (!rawPattern.contains('*')) {
                 sb.append("(?:/.*)?")
             }
             sb.append("$")

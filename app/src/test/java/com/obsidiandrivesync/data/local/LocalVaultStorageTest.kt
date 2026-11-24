@@ -80,4 +80,25 @@ class LocalVaultStorageTest {
         assertEquals(1, emptied)
         assertEquals(0, storage.getTrashStats().fileCount)
     }
+
+    @Test
+    fun `writeFileAtomically overwrites existing file cleanly and deleteItem checks empty dirs`() = runTest {
+        val vaultDir = tempFolder.newFolder("vault_atomic")
+        val storage = LocalVaultStorage(vaultRootPathProvider = { vaultDir.absolutePath })
+
+        storage.writeFileAtomically("Folder/Note.md", 1_000L) { it.write("v1".toByteArray()) }
+        storage.writeFileAtomically("Folder/Note.md", 2_000L) { it.write("version-2".toByteArray()) }
+
+        val noteFile = File(vaultDir, "Folder/Note.md")
+        assertEquals("version-2", noteFile.readText())
+        assertEquals(2_000L, noteFile.lastModified())
+        assertTrue(File(vaultDir, "Folder").listFiles()?.none { it.name.contains(IgnoreRuleMatcher.TEMP_SYNC_FILE_NAME) } == true)
+
+        assertFalse(storage.deleteItem("Folder", isDirectory = true, moveToTrash = false))
+        assertTrue(File(vaultDir, "Folder").exists())
+
+        assertTrue(storage.deleteItem("Folder/Note.md", isDirectory = false, moveToTrash = false))
+        assertTrue(storage.deleteItem("Folder", isDirectory = true, moveToTrash = false))
+        assertFalse(File(vaultDir, "Folder").exists())
+    }
 }

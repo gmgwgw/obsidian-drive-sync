@@ -188,4 +188,51 @@ class SyncPlannerTest {
             SyncPlanner.buildConflictPath("README", "2026-11-24 10-15-30")
         )
     }
+
+    @Test
+    fun `does not delete folder when child file is added or modified on other side`() {
+        val plan = planner.plan(
+            baseline = listOf(
+                BaselineEntry("Projects", "d_proj", true, null, 1_000L, 0L, 1_000L, 1_000L),
+                BaselineEntry("Projects/old.md", "f_old", false, "b_old", 1_000L, 10L, 1_000L, 1_000L)
+            ),
+            localItems = emptyList(),
+            remoteItems = listOf(
+                RemoteFileItem("d_proj", "root", "Projects", "Projects", true, 0L, 1_000L, null),
+                RemoteFileItem("f_old", "d_proj", "old.md", "Projects/old.md", false, 10L, 1_000L, "b_old"),
+                RemoteFileItem("f_new", "d_proj", "new.md", "Projects/new.md", false, 20L, 5_000L, "new_md5")
+            ),
+            deletionGuardEnabled = true,
+            allowLargeDeletionOnce = false,
+            localMd5Provider = { null }
+        )
+
+        assertFalse(plan.actions.any { it is SyncAction.DeleteRemote && it.relativePath == "Projects" })
+        assertTrue(plan.actions.any { it is SyncAction.CreateLocalDir && it.relativePath == "Projects" })
+        assertTrue(plan.actions.any { it is SyncAction.DownloadNew && it.relativePath == "Projects/new.md" })
+        assertTrue(plan.actions.any { it is SyncAction.DeleteRemote && it.relativePath == "Projects/old.md" })
+    }
+
+    @Test
+    fun `skips colliding file vs directory paths and emits warning`() {
+        val plan = planner.plan(
+            baseline = emptyList(),
+            localItems = listOf(
+                LocalFileItem("Notes", false, 10L, 1_000L),
+                LocalFileItem("Valid.md", false, 10L, 1_000L)
+            ),
+            remoteItems = listOf(
+                RemoteFileItem("d1", "root", "Notes", "Notes", true, 0L, 1_000L, null),
+                RemoteFileItem("f1", "d1", "child.md", "Notes/child.md", false, 10L, 1_000L, "abc")
+            ),
+            deletionGuardEnabled = true,
+            allowLargeDeletionOnce = false,
+            localMd5Provider = { "local" }
+        )
+
+        assertEquals(1, plan.warnings.size)
+        assertTrue(plan.warnings.single().contains("Notes"))
+        assertFalse(plan.actions.any { it.relativePath == "Notes" || it.relativePath.startsWith("Notes/") })
+        assertTrue(plan.actions.any { it is SyncAction.UploadNew && it.relativePath == "Valid.md" })
+    }
 }

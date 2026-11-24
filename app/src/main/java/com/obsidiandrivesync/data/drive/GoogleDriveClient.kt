@@ -22,7 +22,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
 import okio.source
 import java.io.IOException
-import java.io.OutputStream
+import java.io.InputStream
 import java.time.Instant
 
 @Serializable
@@ -89,6 +89,7 @@ class GoogleDriveClient(
             data class FolderQueueNode(val folderId: String, val relativePrefix: String)
 
             val queue = ArrayDeque<FolderQueueNode>()
+            val visitedFolderIds = mutableSetOf(rootFolderId)
             queue.add(FolderQueueNode(rootFolderId, ""))
 
             while (queue.isNotEmpty()) {
@@ -99,18 +100,18 @@ class GoogleDriveClient(
                 // Deduplicate same-name entries in the same Drive folder by keeping the newest modifiedTime.
                 val groupedByName = rawChildren.groupBy { it.name }
                 for ((name, duplicates) in groupedByName) {
-                    val chosen = if (duplicates.size > 1) {
-                        val sorted = duplicates.sortedByDescending { parseIsoTimeMs(it.modifiedTime) }
-                        skippedWarnings += "Drive 同名重複を検出 (${current.relativePrefix}/$name): 最新版のみ同期対象にしました。"
-                        sorted.first()
-                    } else {
-                        duplicates.first()
-                    }
-
                     val relPath = if (current.relativePrefix.isEmpty()) {
                         name
                     } else {
                         "${current.relativePrefix}/$name"
+                    }
+
+                    val chosen = if (duplicates.size > 1) {
+                        val sorted = duplicates.sortedByDescending { parseIsoTimeMs(it.modifiedTime) }
+                        skippedWarnings += "Drive 同名重複を検出 ($relPath): 最新版のみ同期対象にしました。"
+                        sorted.first()
+                    } else {
+                        duplicates.first()
                     }
 
                     val isDir = chosen.mimeType == FOLDER_MIME_TYPE
@@ -125,7 +126,7 @@ class GoogleDriveClient(
 
                     val item = chosen.toRemoteFileItem(parentId = current.folderId, relativePath = relPath)
                     resultItems += item
-                    if (isDir) {
+                    if (isDir && visitedFolderIds.add(chosen.id)) {
                         queue.add(FolderQueueNode(chosen.id, relPath))
                     }
                 }
@@ -157,7 +158,10 @@ class GoogleDriveClient(
         dto.toRemoteFileItem(parentId = parentId, relativePath = name)
     }
 
-    override suspend fun downloadFile(driveFileId: String, outputStream: OutputStream): Unit = withContext(Dispatchers.IO) {
+    override suspend fun downloadFile(
+        driveFileId: String,
+        onStream: suspend (InputStream) -> Unit
+    ): Unit = withContext(Dispatchers.IO) {
         val url = "$baseApiUrl/files/$driveFileId".toHttpUrl().newBuilder()
             .addQueryParameter("alt", "media")
             .build()
@@ -169,8 +173,7 @@ class GoogleDriveClient(
                 .get()
                 .build()
         }) { inputStream ->
-            inputStream.copyTo(outputStream, bufferSize = 32 * 1024)
-            outputStream.flush()
+            onStream(inputStream)
         }
     }
 
@@ -244,7 +247,7 @@ class GoogleDriveClient(
             .build()
         val payload = json.encodeToString(DriveTrashDto(trashed = true))
 
-        executeWithRetry(url.toString()) { token ->
+        executeWithRetry(url.toString(), ignoreNotFound = true) { token ->
             Request.Builder()
                 .url(url)
                 .header("Authorization", "Bearer $token")
@@ -294,7 +297,10 @@ class GoogleDriveClient(
         val mediaType = mimeType.toMediaType()
         return object : RequestBody() {
             override fun contentType() = mediaType
-            override fun contentLength() = if (sizeBytes >= 0L) sizeBytes else -1L
+            override fun contentLength(): Long {
+                val liveSize = localGateway.getLocalItem(relativePath)?.sizeBytes
+                return liveSize ?: if (sizeBytes >= 0L) sizeBytes else -1L
+            }
             override fun writeTo(sink: BufferedSink) {
                 localGateway.openInputStream(relativePath).use { stream ->
                     sink.writeAll(stream.source())
@@ -305,10 +311,11 @@ class GoogleDriveClient(
 
     private suspend fun executeWithRetry(
         label: String,
+        ignoreNotFound: Boolean = false,
         requestBuilder: suspend (String) -> Request
     ): String {
         var resultBody = ""
-        executeStreamWithRetry(label, requestBuilder) { stream ->
+        executeStreamWithRetry(label, requestBuilder, ignoreNotFound = ignoreNotFound) { stream ->
             resultBody = stream.bufferedReader(Charsets.UTF_8).readText()
         }
         return resultBody
@@ -317,10 +324,12 @@ class GoogleDriveClient(
     private suspend fun executeStreamWithRetry(
         label: String,
         requestBuilder: suspend (String) -> Request,
-        onSuccessStream: (java.io.InputStream) -> Unit
+        ignoreNotFound: Boolean = false,
+        onSuccessStream: suspend (InputStream) -> Unit
     ) {
         var attempt = 0
         var forceRefresh = false
+        var hasRefreshedAuth = false
         var lastError: Throwable? = null
 
         while (attempt <= MAX_RETRIES) {
@@ -336,9 +345,12 @@ class GoogleDriveClient(
                             onSuccessStream(body.byteStream())
                             return
                         }
-                        response.code == 401 && attempt == 0 -> {
+                        ignoreNotFound && response.code == 404 -> {
+                            return
+                        }
+                        response.code == 401 && !hasRefreshedAuth -> {
+                            hasRefreshedAuth = true
                             forceRefresh = true
-                            attempt++
                         }
                         response.code == 401 -> {
                             throw AuthExpiredException("Google Drive API の認証が拒否されました (401)。")
