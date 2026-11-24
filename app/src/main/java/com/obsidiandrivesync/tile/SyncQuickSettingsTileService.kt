@@ -53,10 +53,13 @@ class SyncQuickSettingsTileService : TileService() {
         scope.launch {
             val syncing = app.container.syncCoordinator.isSyncing.value
             val settings = app.container.preferencesRepository.getSettings()
+            val session = app.container.tokenStore.getSession()
+            val signedIn = session != null && session.refreshToken.isNotBlank()
             val configured = settings.isConfigured && Environment.isExternalStorageManager()
 
             when {
                 syncing -> updateTile(Tile.STATE_ACTIVE, "同期中...")
+                !signedIn -> updateTile(Tile.STATE_INACTIVE, "未ログイン")
                 configured -> updateTile(Tile.STATE_INACTIVE, settings.driveFolderName.ifBlank { "タップで同期" })
                 else -> updateTile(Tile.STATE_INACTIVE, "未設定")
             }

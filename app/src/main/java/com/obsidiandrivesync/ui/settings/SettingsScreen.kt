@@ -70,6 +70,10 @@ fun SettingsScreen(
     var showEmptyTrashDialog by remember { mutableStateOf(false) }
     var showResetBaselineDialog by remember { mutableStateOf(false) }
 
+    LaunchedEffect(settings.localVaultPath, hasStoragePermission) {
+        vm.refreshTrashStats()
+    }
+
     LaunchedEffect(toast) {
         if (toast != null) {
             snackbarHostState.showSnackbar(toast!!)

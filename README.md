@@ -29,7 +29,7 @@ Android 版 Obsidian の保管庫（ローカルフォルダ）と Google Drive 
    - インストールウィザードで既存の Android SDK（`C:\Users\<ユーザー名>\AppData\Local\Android\Sdk`）が自動認識されます。
 2. **プロジェクトを開く**
    - Android Studio の **Open** から `c:\Users\goril\Documents\Workspace\obsidian-drive-sync` を選択します。
-   - 初回 Gradle Sync が自動で走り、`gradle-8.10.2` と依存ライブラリが取得されます。
+   - 初回 Gradle Sync が自動で走り、`gradle-9.6.0` と依存ライブラリが取得されます。
 3. **PowerShell から直接 Gradle を実行したい場合**
    - Android Studio 同梱の JBR（JDK）を `JAVA_HOME` に設定します（例）：
      ```powershell

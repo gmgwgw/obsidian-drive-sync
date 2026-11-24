@@ -96,7 +96,7 @@ fun HomeScreen(
                 )
             }
 
-            if (latestLog?.status == SyncPhase.AUTH_EXPIRED.name) {
+            if (latestLog?.status == SyncPhase.AUTH_EXPIRED.name && !authState.isSignedIn) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                 ) {

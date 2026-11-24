@@ -1,6 +1,8 @@
 package com.obsidiandrivesync.widget
 
 import android.content.Context
+import android.content.Intent
+import android.os.Environment
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,6 +103,21 @@ class TriggerSyncWidgetAction : ActionCallback {
         parameters: ActionParameters
     ) {
         val app = context.applicationContext as VaultSyncApplication
+        val settings = app.container.preferencesRepository.getSettings()
+        val session = app.container.tokenStore.getSession()
+        val ready = Environment.isExternalStorageManager() &&
+            settings.isConfigured &&
+            session != null &&
+            session.refreshToken.isNotBlank()
+
+        if (!ready) {
+            val intent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            context.startActivity(intent)
+            return
+        }
+
         app.container.syncScheduler.enqueueManualSync(SyncWorker.TRIGGER_WIDGET)
         SyncAppWidget().update(context, glanceId)
     }
