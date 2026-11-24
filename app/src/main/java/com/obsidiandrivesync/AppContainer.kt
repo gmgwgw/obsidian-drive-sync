@@ -15,12 +15,16 @@ import com.obsidiandrivesync.sync.SyncCoordinator
 import com.obsidiandrivesync.worker.NotificationHelper
 import com.obsidiandrivesync.worker.SyncScheduler
 import com.obsidiandrivesync.worker.SyncWorker
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
 class AppContainer(context: Context) {
 
     private val appContext = context.applicationContext
+    val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -44,7 +48,6 @@ class AppContainer(context: Context) {
     )
 
     val oauthManager = GoogleOAuthManager(
-        context = appContext,
         tokenStore = tokenStore,
         httpClient = httpClient
     )

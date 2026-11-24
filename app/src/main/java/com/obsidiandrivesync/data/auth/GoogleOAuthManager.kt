@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Base64
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.core.net.toUri
 import com.obsidiandrivesync.BuildConfig
 import com.obsidiandrivesync.domain.sync.AuthExpiredException
 import kotlinx.coroutines.Dispatchers
@@ -60,7 +61,6 @@ data class AuthUiState(
  * Direct RFC 8252 OAuth 2.0 + PKCE client using Android Custom Tabs and OkHttp.
  */
 class GoogleOAuthManager(
-    private val context: Context,
     private val tokenStore: AuthTokenStore,
     private val httpClient: OkHttpClient
 ) {
@@ -94,7 +94,7 @@ class GoogleOAuthManager(
         val codeChallenge = sha256Base64Url(codeVerifier)
         val redirectUri = "${BuildConfig.OAUTH_REDIRECT_SCHEME}:/oauth2redirect"
 
-        val authUri = Uri.parse(AUTH_ENDPOINT).buildUpon()
+        val authUri = AUTH_ENDPOINT.toUri().buildUpon()
             .appendQueryParameter("client_id", clientId)
             .appendQueryParameter("redirect_uri", redirectUri)
             .appendQueryParameter("response_type", "code")

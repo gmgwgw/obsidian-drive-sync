@@ -5,8 +5,6 @@ import android.content.Intent
 import android.os.Bundle
 import com.obsidiandrivesync.MainActivity
 import com.obsidiandrivesync.VaultSyncApplication
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class OAuthRedirectActivity : Activity() {
@@ -15,7 +13,7 @@ class OAuthRedirectActivity : Activity() {
         super.onCreate(savedInstanceState)
         val uri = intent?.data
         val app = application as VaultSyncApplication
-        CoroutineScope(Dispatchers.Main).launch {
+        app.container.applicationScope.launch {
             if (uri != null) {
                 app.container.oauthManager.handleRedirectUri(uri)
             }

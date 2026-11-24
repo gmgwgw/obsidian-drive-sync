@@ -15,7 +15,7 @@ interface LocalVaultGateway {
     fun getLocalItem(relativePath: String): LocalFileItem?
     suspend fun ensureDirectory(relativePath: String)
     suspend fun writeFileAtomically(relativePath: String, modifiedTimeMs: Long, writer: suspend (java.io.OutputStream) -> Unit)
-    suspend fun openInputStream(relativePath: String): java.io.InputStream
+    fun openInputStream(relativePath: String): java.io.InputStream
     suspend fun renameFile(fromRelativePath: String, toRelativePath: String): LocalFileItem
     suspend fun deleteItem(relativePath: String, isDirectory: Boolean, moveToTrash: Boolean)
     suspend fun purgeExpiredTrash(retentionDays: Int): Int

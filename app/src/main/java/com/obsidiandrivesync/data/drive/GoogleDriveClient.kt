@@ -296,10 +296,7 @@ class GoogleDriveClient(
             override fun contentType() = mediaType
             override fun contentLength() = if (sizeBytes >= 0L) sizeBytes else -1L
             override fun writeTo(sink: BufferedSink) {
-                val inputStream = kotlinx.coroutines.runBlocking {
-                    localGateway.openInputStream(relativePath)
-                }
-                inputStream.use { stream ->
+                localGateway.openInputStream(relativePath).use { stream ->
                     sink.writeAll(stream.source())
                 }
             }

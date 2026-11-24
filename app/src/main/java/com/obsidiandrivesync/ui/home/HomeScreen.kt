@@ -1,9 +1,5 @@
 package com.obsidiandrivesync.ui.home
 
-import android.content.Intent
-import android.net.Uri
-import android.os.Environment
-import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,29 +32,23 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.obsidiandrivesync.AppContainer
 import com.obsidiandrivesync.domain.model.SyncPhase
+import com.obsidiandrivesync.ui.common.formatDateTime
+import com.obsidiandrivesync.ui.common.formatStatusLabel
+import com.obsidiandrivesync.ui.common.openAllFilesAccessSettings
+import com.obsidiandrivesync.ui.common.rememberAllFilesAccessState
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,18 +66,7 @@ fun HomeScreen(
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var hasStoragePermission by remember { mutableStateOf(Environment.isExternalStorageManager()) }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasStoragePermission = Environment.isExternalStorageManager()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+    val hasStoragePermission = rememberAllFilesAccessState()
 
     val isReadyToSync = hasStoragePermission && authState.isSignedIn && settings.isConfigured
 
@@ -112,13 +91,7 @@ fun HomeScreen(
                     isSignedIn = authState.isSignedIn,
                     hasLocalFolder = settings.localVaultPath.isNotBlank(),
                     hasDriveFolder = settings.driveFolderId.isNotBlank(),
-                    onGrantStorage = {
-                        val intent = Intent(
-                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                            Uri.parse("package:${context.packageName}")
-                        )
-                        context.startActivity(intent)
-                    },
+                    onGrantStorage = { openAllFilesAccessSettings(context) },
                     onOpenSettings = onNavigateToSettings
                 )
             }
@@ -245,8 +218,7 @@ fun HomeScreen(
                         }
                     } else if (latestLog != null) {
                         val log = latestLog!!
-                        val timeStr = SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.getDefault())
-                            .format(Date(log.finishedAtMs))
+                        val timeStr = formatDateTime(log.finishedAtMs)
                         Text(
                             text = "最終同期: $timeStr (${formatStatusLabel(log.status)})",
                             style = MaterialTheme.typography.bodySmall,
@@ -407,13 +379,4 @@ private fun ChecklistRow(label: String, done: Boolean) {
         Spacer(Modifier.width(8.dp))
         Text(text = label, style = MaterialTheme.typography.bodyMedium)
     }
-}
-
-fun formatStatusLabel(statusName: String): String = when (statusName) {
-    SyncPhase.COMPLETED.name -> "成功"
-    SyncPhase.CANCELLED.name -> "キャンセル"
-    SyncPhase.DELETION_GUARD_BLOCKED.name -> "削除ブレーキ停止"
-    SyncPhase.AUTH_EXPIRED.name -> "認証期限切れ"
-    SyncPhase.FAILED.name -> "失敗"
-    else -> statusName
 }

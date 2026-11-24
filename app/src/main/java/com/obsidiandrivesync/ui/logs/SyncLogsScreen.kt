@@ -32,10 +32,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.obsidiandrivesync.AppContainer
 import com.obsidiandrivesync.data.db.SyncLogEntity
 import com.obsidiandrivesync.domain.model.SyncPhase
-import com.obsidiandrivesync.ui.home.formatStatusLabel
+import com.obsidiandrivesync.ui.common.formatDateTime
+import com.obsidiandrivesync.ui.common.formatLogDateTime
+import com.obsidiandrivesync.ui.common.formatStatusLabel
+import com.obsidiandrivesync.ui.common.formatTriggerLabel
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -85,8 +86,7 @@ fun SyncLogsScreen(container: AppContainer) {
     }
 
     selectedLog?.let { log ->
-        val timeStr = SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.getDefault())
-            .format(Date(log.finishedAtMs))
+        val timeStr = formatDateTime(log.finishedAtMs)
         val durationSec = ((log.finishedAtMs - log.startedAtMs).coerceAtLeast(0L)) / 1000.0
         AlertDialog(
             onDismissRequest = { selectedLog = null },
@@ -123,7 +123,7 @@ fun SyncLogsScreen(container: AppContainer) {
 
 @Composable
 private fun LogCard(log: SyncLogEntity, onClick: () -> Unit) {
-    val timeStr = SimpleDateFormat("MM/dd HH:mm:ss", Locale.getDefault()).format(Date(log.finishedAtMs))
+    val timeStr = formatLogDateTime(log.finishedAtMs)
     val statusColor = when (log.status) {
         SyncPhase.COMPLETED.name -> MaterialTheme.colorScheme.primary
         SyncPhase.CANCELLED.name -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -164,12 +164,4 @@ private fun LogCard(log: SyncLogEntity, onClick: () -> Unit) {
             }
         }
     }
-}
-
-private fun formatTriggerLabel(source: String): String = when (source) {
-    "manual" -> "手動"
-    "periodic" -> "定期"
-    "tile" -> "クイックタイル"
-    "widget" -> "ウィジェット"
-    else -> source
 }

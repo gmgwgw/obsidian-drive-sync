@@ -1,8 +1,8 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
@@ -15,7 +15,9 @@ val localProps = Properties().apply {
     }
 }
 
-val oauthClientId = (localProps.getProperty("GOOGLE_OAUTH_CLIENT_ID") ?: "").trim()
+val oauthClientId = (localProps.getProperty("GOOGLE_OAUTH_CLIENT_ID") ?: "")
+    .trim()
+    .trim('"', '\'')
 val oauthRedirectScheme = if (oauthClientId.endsWith(".apps.googleusercontent.com")) {
     val prefix = oauthClientId.removeSuffix(".apps.googleusercontent.com")
     "com.googleusercontent.apps.$prefix"
@@ -25,12 +27,12 @@ val oauthRedirectScheme = if (oauthClientId.endsWith(".apps.googleusercontent.co
 
 android {
     namespace = "com.obsidiandrivesync"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.obsidiandrivesync"
         minSdk = 30
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
 
@@ -44,6 +46,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -56,10 +59,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -69,6 +68,12 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 

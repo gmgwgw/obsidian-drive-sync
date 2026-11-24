@@ -27,9 +27,11 @@ class IgnoreRuleMatcherTest {
 
     @Test
     fun `normalizes backslashes and leading slashes`() {
-        val matcher = IgnoreRuleMatcher(listOf("Private/**", "*.bak"))
+        val matcher = IgnoreRuleMatcher(listOf("Private/**", "*.bak", ".DS_Store"))
         assertTrue(matcher.isIgnored("\\Private\\secret.md"))
         assertTrue(matcher.isIgnored("/Notes/temp.bak"))
+        assertTrue(matcher.isIgnored("temp.bak"))
+        assertTrue(matcher.isIgnored("Sub/.DS_Store"))
         assertFalse(matcher.isIgnored("Notes/temp.md"))
     }
 }

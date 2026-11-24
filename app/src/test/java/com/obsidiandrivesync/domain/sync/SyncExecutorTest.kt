@@ -69,6 +69,69 @@ class SyncExecutorTest {
         assertTrue(storedPaths.contains(conflictCopyPath))
     }
 
+    @Test
+    fun `creates nested remote folders before uploading nested file`() = runTest {
+        val local = FakeLocalGateway().apply {
+            dirs += "Projects"
+            dirs += "Projects/Sub"
+            files["Projects/Sub/plan.md"] = FakeLocalEntry("hello".toByteArray(), 2_000L)
+        }
+        val remote = FakeRemoteGateway()
+        val baseline = FakeBaselineStore()
+
+        val executor = SyncExecutor(local, remote, baseline, clockMs = { 5_000L })
+        val summary = executor.execute(
+            SyncConfig(
+                localVaultPath = "/fake",
+                driveFolderId = "root",
+                driveFolderName = "Vault",
+                ignorePatterns = IgnoreRuleMatcher.DEFAULT_PATTERNS
+            )
+        )
+
+        assertEquals(SyncPhase.COMPLETED, summary.status)
+        assertEquals(1, summary.uploadedCount)
+        assertTrue(remote.createdFolders.contains("Projects"))
+        assertTrue(remote.createdFolders.contains("Sub"))
+        assertTrue(remote.entries.containsKey("Projects/Sub/plan.md"))
+        val baselineMap = baseline.getAllEntries().associateBy { it.relativePath }
+        assertTrue(baselineMap.containsKey("Projects"))
+        assertTrue(baselineMap.containsKey("Projects/Sub"))
+        assertTrue(baselineMap.containsKey("Projects/Sub/plan.md"))
+    }
+
+    @Test
+    fun `deletes remote when local removed and moves local to trash when remote removed`() = runTest {
+        val local = FakeLocalGateway().apply {
+            files["keep_remote_deleted.md"] = FakeLocalEntry("same".toByteArray(), 1_000L)
+        }
+        val remote = FakeRemoteGateway().apply {
+            entries["keep_local_deleted.md"] = FakeRemoteEntry("r_del", "root", "same".toByteArray(), 1_000L)
+        }
+        val baseline = FakeBaselineStore().apply {
+            upsert(BaselineEntry("keep_remote_deleted.md", "r_gone", false, md5("same"), 1_000L, 4L, 1_000L, 1_000L))
+            upsert(BaselineEntry("keep_local_deleted.md", "r_del", false, md5("same"), 1_000L, 4L, 1_000L, 1_000L))
+        }
+
+        val executor = SyncExecutor(local, remote, baseline, clockMs = { 9_000L })
+        val summary = executor.execute(
+            SyncConfig(
+                localVaultPath = "/fake",
+                driveFolderId = "root",
+                driveFolderName = "Vault",
+                ignorePatterns = IgnoreRuleMatcher.DEFAULT_PATTERNS,
+                moveRemoteDeletedToTrash = true
+            )
+        )
+
+        assertEquals(SyncPhase.COMPLETED, summary.status)
+        assertEquals(1, summary.deletedLocalCount)
+        assertEquals(1, summary.deletedRemoteCount)
+        assertTrue(local.deletedToTrashPaths.contains("keep_remote_deleted.md"))
+        assertTrue(remote.trashedIds.contains("r_del"))
+        assertTrue(baseline.getAllEntries().isEmpty())
+    }
+
     private fun md5(s: String): String {
         val digest = MessageDigest.getInstance("MD5").digest(s.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
@@ -80,6 +143,7 @@ class SyncExecutorTest {
     private class FakeLocalGateway : LocalVaultGateway {
         val files = linkedMapOf<String, FakeLocalEntry>()
         val dirs = linkedSetOf<String>()
+        val deletedToTrashPaths = mutableListOf<String>()
         var lastPurgedRetentionDays: Int? = null
 
         override suspend fun listFiles(ignoreMatcher: IgnoreRuleMatcher): List<LocalFileItem> {
@@ -111,7 +175,7 @@ class SyncExecutorTest {
             files[relativePath] = FakeLocalEntry(out.toByteArray(), modifiedTimeMs)
         }
 
-        override suspend fun openInputStream(relativePath: String): InputStream {
+        override fun openInputStream(relativePath: String): InputStream {
             return ByteArrayInputStream(files.getValue(relativePath).bytes)
         }
 
@@ -123,6 +187,9 @@ class SyncExecutorTest {
 
         override suspend fun deleteItem(relativePath: String, isDirectory: Boolean, moveToTrash: Boolean) {
             files.remove(relativePath)
+            if (!isDirectory && moveToTrash) {
+                deletedToTrashPaths += relativePath
+            }
         }
 
         override suspend fun purgeExpiredTrash(retentionDays: Int): Int {
@@ -133,6 +200,8 @@ class SyncExecutorTest {
 
     private class FakeRemoteGateway : RemoteDriveGateway {
         val entries = linkedMapOf<String, FakeRemoteEntry>()
+        val createdFolders = mutableListOf<String>()
+        val trashedIds = mutableListOf<String>()
         private var idSeq = 100
 
         override suspend fun listFolderTree(rootFolderId: String, ignoreMatcher: IgnoreRuleMatcher): RemoteTreeResult {
@@ -154,6 +223,7 @@ class SyncExecutorTest {
 
         override suspend fun createFolder(parentId: String, name: String): RemoteFileItem {
             val id = "dir_${++idSeq}"
+            createdFolders += name
             return RemoteFileItem(id, parentId, name, name, true, 0L, 1_000L, null)
         }
 
@@ -188,6 +258,7 @@ class SyncExecutorTest {
         }
 
         override suspend fun trashFile(driveFileId: String) {
+            trashedIds += driveFileId
             entries.entries.removeIf { it.value.id == driveFileId }
         }
     }

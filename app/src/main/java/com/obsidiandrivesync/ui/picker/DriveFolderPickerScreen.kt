@@ -111,8 +111,14 @@ fun DriveFolderPickerScreen(
                 Button(
                     onClick = {
                         scope.launch {
+                            val previous = container.preferencesRepository.getSettings()
                             val displayName = navStack.joinToString(" / ") { it.name }
+                            if (previous.driveFolderId.isNotBlank() && previous.driveFolderId != currentFolder.id) {
+                                container.syncDao.clearAllEntries()
+                            }
                             container.preferencesRepository.setDriveFolder(currentFolder.id, displayName)
+                            val updated = container.preferencesRepository.getSettings()
+                            container.syncScheduler.schedulePeriodicSync(updated)
                             onFolderSelected()
                         }
                     },

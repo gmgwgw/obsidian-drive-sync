@@ -29,10 +29,8 @@ import androidx.glance.text.TextStyle
 import com.obsidiandrivesync.MainActivity
 import com.obsidiandrivesync.VaultSyncApplication
 import com.obsidiandrivesync.domain.model.SyncPhase
+import com.obsidiandrivesync.ui.common.formatShortDateTime
 import com.obsidiandrivesync.worker.SyncWorker
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class SyncAppWidget : GlanceAppWidget() {
 
@@ -45,8 +43,7 @@ class SyncAppWidget : GlanceAppWidget() {
             isSyncing -> "同期中..."
             latestLog == null -> "未同期"
             latestLog.status == SyncPhase.COMPLETED.name -> {
-                val timeStr = SimpleDateFormat("MM/dd HH:mm", Locale.getDefault())
-                    .format(Date(latestLog.finishedAtMs))
+                val timeStr = formatShortDateTime(latestLog.finishedAtMs)
                 "最終: $timeStr (↑${latestLog.uploadedCount} ↓${latestLog.downloadedCount})"
             }
             else -> "前回: ${latestLog.status}"

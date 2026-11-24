@@ -1,9 +1,5 @@
 package com.obsidiandrivesync.ui.settings
 
-import android.content.Intent
-import android.net.Uri
-import android.os.Environment
-import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -19,7 +15,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -33,7 +28,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,12 +39,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.obsidiandrivesync.AppContainer
+import com.obsidiandrivesync.ui.common.formatBytes
+import com.obsidiandrivesync.ui.common.openAllFilesAccessSettings
+import com.obsidiandrivesync.ui.common.rememberAllFilesAccessState
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -71,22 +65,10 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var hasStoragePermission by remember { mutableStateOf(Environment.isExternalStorageManager()) }
+    val hasStoragePermission = rememberAllFilesAccessState { vm.refreshTrashStats() }
     var showIgnoreDialog by remember { mutableStateOf(false) }
     var showEmptyTrashDialog by remember { mutableStateOf(false) }
     var showResetBaselineDialog by remember { mutableStateOf(false) }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasStoragePermission = Environment.isExternalStorageManager()
-                vm.refreshTrashStats()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     LaunchedEffect(toast) {
         if (toast != null) {
@@ -161,13 +143,7 @@ fun SettingsScreen(
                             )
                         }
                         if (!hasStoragePermission) {
-                            Button(onClick = {
-                                val intent = Intent(
-                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                    Uri.parse("package:${context.packageName}")
-                                )
-                                context.startActivity(intent)
-                            }) {
+                            Button(onClick = { openAllFilesAccessSettings(context) }) {
                                 Text("許可する")
                             }
                         }
@@ -255,9 +231,8 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val sizeKb = trashStats.totalBytes / 1024L
                         Text(
-                            "現在の .trash: ${trashStats.fileCount} 件 (${sizeKb} KB)",
+                            "現在の .trash: ${trashStats.fileCount} 件 (${formatBytes(trashStats.totalBytes)})",
                             style = MaterialTheme.typography.bodySmall
                         )
                         OutlinedButton(

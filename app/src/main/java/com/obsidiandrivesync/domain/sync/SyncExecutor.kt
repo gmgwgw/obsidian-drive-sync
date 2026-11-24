@@ -11,8 +11,9 @@ import com.obsidiandrivesync.domain.model.SyncSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 class SyncExecutor(
@@ -203,7 +204,7 @@ class SyncExecutor(
 
                     is SyncAction.ResolveConflict -> {
                         val now = clockMs()
-                        val formattedTs = SimpleDateFormat("yyyy-MM-dd HH-mm-ss", Locale.US).format(Date(now))
+                        val formattedTs = CONFLICT_TS_FORMATTER.format(Instant.ofEpochMilli(now))
                         val conflictPath = SyncPlanner.buildConflictPath(action.relativePath, formattedTs)
 
                         // 1. Preserve local edits under a conflict copy name
@@ -407,6 +408,12 @@ class SyncExecutor(
             "js" -> "application/javascript"
             else -> "application/octet-stream"
         }
+    }
+
+    companion object {
+        private val CONFLICT_TS_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH-mm-ss", Locale.US)
+                .withZone(ZoneId.systemDefault())
     }
 }
 

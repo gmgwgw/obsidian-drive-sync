@@ -11,8 +11,9 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 data class TrashStats(
@@ -139,9 +140,9 @@ class LocalVaultStorage(
         }
     }
 
-    override suspend fun openInputStream(relativePath: String): InputStream = withContext(Dispatchers.IO) {
+    override fun openInputStream(relativePath: String): InputStream {
         val file = resolveSafe(relativePath)
-        FileInputStream(file)
+        return FileInputStream(file)
     }
 
     override suspend fun renameFile(fromRelativePath: String, toRelativePath: String): LocalFileItem =
@@ -188,7 +189,7 @@ class LocalVaultStorage(
         dest.parentFile?.let { if (!it.exists()) it.mkdirs() }
 
         if (dest.exists()) {
-            val ts = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(clockMs()))
+            val ts = TRASH_COLLISION_FORMATTER.format(Instant.ofEpochMilli(clockMs()))
             val name = dest.name
             val dot = name.lastIndexOf('.')
             val uniqueName = if (dot > 0) {
@@ -277,5 +278,8 @@ class LocalVaultStorage(
     companion object {
         const val TRASH_DIR_NAME = ".trash"
         private const val MILLIS_PER_DAY = 86_400_000L
+        private val TRASH_COLLISION_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.US)
+                .withZone(ZoneId.systemDefault())
     }
 }

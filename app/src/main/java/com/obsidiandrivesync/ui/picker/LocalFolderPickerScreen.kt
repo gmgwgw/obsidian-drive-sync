@@ -31,6 +31,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,7 +53,7 @@ fun LocalFolderPickerScreen(
     val scope = rememberCoroutineScope()
     val storageRoot = remember { Environment.getExternalStorageDirectory() }
     var currentDir by remember { mutableStateOf(storageRoot) }
-    var refreshTrigger by remember { mutableStateOf(0) }
+    var refreshTrigger by remember { mutableIntStateOf(0) }
     var showCreateDialog by remember { mutableStateOf(false) }
 
     val subDirs = remember(currentDir, refreshTrigger) {
@@ -99,7 +100,14 @@ fun LocalFolderPickerScreen(
                 Button(
                     onClick = {
                         scope.launch {
-                            container.preferencesRepository.setLocalVaultPath(currentDir.absolutePath)
+                            val previous = container.preferencesRepository.getSettings()
+                            val selectedPath = currentDir.absolutePath
+                            if (previous.localVaultPath.isNotBlank() && previous.localVaultPath != selectedPath) {
+                                container.syncDao.clearAllEntries()
+                            }
+                            container.preferencesRepository.setLocalVaultPath(selectedPath)
+                            val updated = container.preferencesRepository.getSettings()
+                            container.syncScheduler.schedulePeriodicSync(updated)
                             onFolderSelected()
                         }
                     },

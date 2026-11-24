@@ -53,6 +53,10 @@ class IgnoreRuleMatcher(patterns: List<String>) {
         private fun patternToRegex(rawPattern: String): Regex {
             val pattern = rawPattern.trimEnd('/')
             val sb = StringBuilder("^")
+            // Match basename patterns (no '/') at any directory depth, consistent with .gitignore.
+            if (!pattern.contains('/')) {
+                sb.append("(?:.*/)?")
+            }
             var i = 0
             while (i < pattern.length) {
                 when {
