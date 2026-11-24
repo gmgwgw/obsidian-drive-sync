@@ -41,6 +41,7 @@ fun formatBytes(bytes: Long): String {
 fun formatStatusLabel(statusName: String): String = when (statusName) {
     SyncPhase.COMPLETED.name -> "成功"
     SyncPhase.CANCELLED.name -> "キャンセル"
+    SyncPhase.ALREADY_RUNNING.name -> "実行中スキップ"
     SyncPhase.DELETION_GUARD_BLOCKED.name -> "削除ブレーキ停止"
     SyncPhase.AUTH_EXPIRED.name -> "認証期限切れ"
     SyncPhase.FAILED.name -> "失敗"

@@ -46,6 +46,7 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
 
     fun signOut() {
         viewModelScope.launch {
+            container.syncScheduler.cancelPeriodicSync()
             container.oauthManager.signOut()
             _statusToast.value = "Google アカウントからログアウトしました"
         }

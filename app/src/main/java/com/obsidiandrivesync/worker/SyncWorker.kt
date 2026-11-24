@@ -30,6 +30,10 @@ class SyncWorker(
             allowLargeDeletionOnce = allowLargeDeletionOnce
         )
 
+        if (summary.status == SyncPhase.ALREADY_RUNNING) {
+            return Result.success()
+        }
+
         notificationHelper.notifySummaryIfNeeded(summary)
 
         return when (summary.status) {

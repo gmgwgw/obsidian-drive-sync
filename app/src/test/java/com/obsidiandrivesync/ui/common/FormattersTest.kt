@@ -20,6 +20,7 @@ class FormattersTest {
     fun `formatStatusLabel maps all SyncPhase names`() {
         assertEquals("成功", formatStatusLabel(SyncPhase.COMPLETED.name))
         assertEquals("キャンセル", formatStatusLabel(SyncPhase.CANCELLED.name))
+        assertEquals("実行中スキップ", formatStatusLabel(SyncPhase.ALREADY_RUNNING.name))
         assertEquals("削除ブレーキ停止", formatStatusLabel(SyncPhase.DELETION_GUARD_BLOCKED.name))
         assertEquals("認証期限切れ", formatStatusLabel(SyncPhase.AUTH_EXPIRED.name))
         assertEquals("失敗", formatStatusLabel(SyncPhase.FAILED.name))

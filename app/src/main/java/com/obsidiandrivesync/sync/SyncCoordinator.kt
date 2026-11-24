@@ -21,10 +21,14 @@ import com.obsidiandrivesync.domain.sync.SyncExecutor
 import com.obsidiandrivesync.tile.SyncQuickSettingsTileService
 import com.obsidiandrivesync.widget.SyncAppWidget
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 
 class SyncCoordinator(
     private val context: Context,
@@ -34,6 +38,8 @@ class SyncCoordinator(
     private val driveClient: GoogleDriveClient
 ) {
     private val syncMutex = Mutex()
+    @Volatile
+    private var activeSyncJob: Job? = null
 
     private val _progress = MutableStateFlow(SyncProgress())
     val progress: StateFlow<SyncProgress> = _progress.asStateFlow()
@@ -44,6 +50,10 @@ class SyncCoordinator(
     private val _lastSummary = MutableStateFlow<SyncSummary?>(null)
     val lastSummary: StateFlow<SyncSummary?> = _lastSummary.asStateFlow()
 
+    fun cancelCurrentSync() {
+        activeSyncJob?.cancel()
+    }
+
     suspend fun runSync(
         triggerSource: String,
         allowLargeDeletionOnce: Boolean = false
@@ -53,20 +63,21 @@ class SyncCoordinator(
             return SyncSummary(
                 startedAtMs = now,
                 finishedAtMs = now,
-                status = SyncPhase.FAILED,
+                status = SyncPhase.ALREADY_RUNNING,
                 errorMessage = "別の同期が既に実行中です。"
             )
         }
 
+        val runStartedAt = System.currentTimeMillis()
         _isSyncing.value = true
         notifySystemSurfaces()
         try {
+            activeSyncJob = currentCoroutineContext()[Job]
             val settings = preferencesRepository.getSettings()
-            val now = System.currentTimeMillis()
 
             if (!Environment.isExternalStorageManager()) {
                 return recordFailure(
-                    startedAt = now,
+                    startedAt = runStartedAt,
                     triggerSource = triggerSource,
                     phase = SyncPhase.FAILED,
                     message = "「すべてのファイルへのアクセス」権限が許可されていません。"
@@ -74,7 +85,7 @@ class SyncCoordinator(
             }
             if (!settings.isConfigured) {
                 return recordFailure(
-                    startedAt = now,
+                    startedAt = runStartedAt,
                     triggerSource = triggerSource,
                     phase = SyncPhase.FAILED,
                     message = "ローカル保管庫または Google Drive フォルダが未設定です。"
@@ -123,6 +134,7 @@ class SyncCoordinator(
                     errorMessage = summary.errorMessage
                 )
             )
+            syncDao.pruneOldLogs()
 
             if (summary.conflicts.isNotEmpty()) {
                 syncDao.insertConflicts(
@@ -135,31 +147,35 @@ class SyncCoordinator(
                         )
                     }
                 )
+                syncDao.pruneOldAcknowledgedConflicts()
             }
 
             _lastSummary.value = summary
             return summary
         } catch (ce: CancellationException) {
             val now = System.currentTimeMillis()
-            val cancelled = SyncSummary(startedAtMs = now, finishedAtMs = now, status = SyncPhase.CANCELLED)
+            val cancelled = SyncSummary(startedAtMs = runStartedAt, finishedAtMs = now, status = SyncPhase.CANCELLED)
             _progress.value = SyncProgress(SyncPhase.CANCELLED, message = "同期がキャンセルされました")
             _lastSummary.value = cancelled
-            syncDao.insertLog(
-                SyncLogEntity(
-                    startedAtMs = now,
-                    finishedAtMs = now,
-                    triggerSource = triggerSource,
-                    status = SyncPhase.CANCELLED.name,
-                    uploadedCount = 0,
-                    downloadedCount = 0,
-                    deletedLocalCount = 0,
-                    deletedRemoteCount = 0,
-                    conflictCount = 0,
-                    trashPurgedCount = 0,
-                    warningsText = "",
-                    errorMessage = "ユーザーによりキャンセルされました"
+            withContext(NonCancellable) {
+                syncDao.insertLog(
+                    SyncLogEntity(
+                        startedAtMs = runStartedAt,
+                        finishedAtMs = now,
+                        triggerSource = triggerSource,
+                        status = SyncPhase.CANCELLED.name,
+                        uploadedCount = 0,
+                        downloadedCount = 0,
+                        deletedLocalCount = 0,
+                        deletedRemoteCount = 0,
+                        conflictCount = 0,
+                        trashPurgedCount = 0,
+                        warningsText = "",
+                        errorMessage = "ユーザーによりキャンセルされました"
+                    )
                 )
-            )
+                syncDao.pruneOldLogs()
+            }
             throw ce
         } catch (e: Exception) {
             val phase = if (e is com.obsidiandrivesync.domain.sync.AuthExpiredException) {
@@ -168,15 +184,18 @@ class SyncCoordinator(
                 SyncPhase.FAILED
             }
             return recordFailure(
-                startedAt = System.currentTimeMillis(),
+                startedAt = runStartedAt,
                 triggerSource = triggerSource,
                 phase = phase,
                 message = e.message ?: e::class.java.simpleName
             )
         } finally {
+            activeSyncJob = null
             _isSyncing.value = false
             syncMutex.unlock()
-            notifySystemSurfaces()
+            withContext(NonCancellable) {
+                notifySystemSurfaces()
+            }
         }
     }
 

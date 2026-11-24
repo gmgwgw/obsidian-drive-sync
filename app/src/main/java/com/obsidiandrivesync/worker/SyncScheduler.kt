@@ -40,9 +40,10 @@ class SyncScheduler(private val context: Context) {
             )
             .build()
 
+        val policy = if (allowLargeDeletionOnce) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
         workManager.enqueueUniqueWork(
             UNIQUE_MANUAL_SYNC_WORK,
-            ExistingWorkPolicy.KEEP,
+            policy,
             request
         )
     }
@@ -76,6 +77,10 @@ class SyncScheduler(private val context: Context) {
 
     fun cancelActiveSync() {
         workManager.cancelUniqueWork(UNIQUE_MANUAL_SYNC_WORK)
+    }
+
+    fun cancelPeriodicSync() {
+        workManager.cancelUniqueWork(UNIQUE_PERIODIC_SYNC_WORK)
     }
 
     fun observeManualWorkActive(): Flow<Boolean> {

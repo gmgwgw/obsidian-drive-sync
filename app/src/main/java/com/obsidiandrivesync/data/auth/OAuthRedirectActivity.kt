@@ -14,14 +14,19 @@ class OAuthRedirectActivity : Activity() {
         val uri = intent?.data
         val app = application as VaultSyncApplication
         app.container.applicationScope.launch {
-            if (uri != null) {
-                app.container.oauthManager.handleRedirectUri(uri)
+            try {
+                if (uri != null) {
+                    app.container.oauthManager.handleRedirectUri(uri)
+                }
+            } catch (_: Exception) {
+                // Error details are exposed via GoogleOAuthManager.lastAuthError.
+            } finally {
+                val mainIntent = Intent(this@OAuthRedirectActivity, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                startActivity(mainIntent)
+                finish()
             }
-            val mainIntent = Intent(this@OAuthRedirectActivity, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
-            startActivity(mainIntent)
-            finish()
         }
     }
 }
