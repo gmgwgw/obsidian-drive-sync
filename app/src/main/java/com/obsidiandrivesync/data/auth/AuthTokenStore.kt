@@ -34,10 +34,19 @@ data class PendingPkceState(
     val state: String
 )
 
+interface AuthTokenStorage {
+    val sessionFlow: Flow<StoredAuthSession?>
+    suspend fun getSession(): StoredAuthSession?
+    suspend fun saveSession(session: StoredAuthSession)
+    suspend fun clearSession()
+    suspend fun savePendingPkce(pending: PendingPkceState)
+    suspend fun consumePendingPkce(): PendingPkceState?
+}
+
 class AuthTokenStore(
     private val context: Context,
     private val cryptoManager: CryptoManager = CryptoManager()
-) {
+) : AuthTokenStorage {
     private val json = Json { ignoreUnknownKeys = true }
 
     private object Keys {
@@ -45,33 +54,33 @@ class AuthTokenStore(
         val ENCRYPTED_PENDING_PKCE = stringPreferencesKey("encrypted_pending_pkce")
     }
 
-    val sessionFlow: Flow<StoredAuthSession?> = context.authDataStore.data.map { prefs ->
+    override val sessionFlow: Flow<StoredAuthSession?> = context.authDataStore.data.map { prefs ->
         val encrypted = prefs[Keys.ENCRYPTED_SESSION] ?: return@map null
         decryptSessionOrNull(encrypted)
     }
 
-    suspend fun getSession(): StoredAuthSession? = sessionFlow.first()
+    override suspend fun getSession(): StoredAuthSession? = sessionFlow.first()
 
-    suspend fun saveSession(session: StoredAuthSession) {
+    override suspend fun saveSession(session: StoredAuthSession) {
         val rawJson = json.encodeToString(session)
         val encrypted = cryptoManager.encrypt(rawJson)
         context.authDataStore.edit { it[Keys.ENCRYPTED_SESSION] = encrypted }
     }
 
-    suspend fun clearSession() {
+    override suspend fun clearSession() {
         context.authDataStore.edit {
             it.remove(Keys.ENCRYPTED_SESSION)
             it.remove(Keys.ENCRYPTED_PENDING_PKCE)
         }
     }
 
-    suspend fun savePendingPkce(pending: PendingPkceState) {
+    override suspend fun savePendingPkce(pending: PendingPkceState) {
         val rawJson = json.encodeToString(pending)
         val encrypted = cryptoManager.encrypt(rawJson)
         context.authDataStore.edit { it[Keys.ENCRYPTED_PENDING_PKCE] = encrypted }
     }
 
-    suspend fun consumePendingPkce(): PendingPkceState? {
+    override suspend fun consumePendingPkce(): PendingPkceState? {
         val encrypted = context.authDataStore.data.first()[Keys.ENCRYPTED_PENDING_PKCE] ?: return null
         context.authDataStore.edit { it.remove(Keys.ENCRYPTED_PENDING_PKCE) }
         return runCatching {

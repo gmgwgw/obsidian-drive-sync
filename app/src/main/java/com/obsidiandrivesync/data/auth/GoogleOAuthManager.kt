@@ -3,11 +3,11 @@ package com.obsidiandrivesync.data.auth
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.util.Base64
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.net.toUri
 import com.obsidiandrivesync.BuildConfig
 import com.obsidiandrivesync.domain.sync.AuthExpiredException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +25,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Base64
 
 @Serializable
 private data class TokenResponseDto(
@@ -61,8 +62,13 @@ data class AuthUiState(
  * Direct RFC 8252 OAuth 2.0 + PKCE client using Android Custom Tabs and OkHttp.
  */
 class GoogleOAuthManager(
-    private val tokenStore: AuthTokenStore,
-    private val httpClient: OkHttpClient
+    private val tokenStore: AuthTokenStorage,
+    private val httpClient: OkHttpClient,
+    private val clientId: String = BuildConfig.GOOGLE_OAUTH_CLIENT_ID,
+    private val redirectScheme: String = BuildConfig.OAUTH_REDIRECT_SCHEME,
+    private val tokenEndpoint: String = TOKEN_ENDPOINT,
+    private val revokeEndpoint: String = REVOKE_ENDPOINT,
+    private val aboutEndpoint: String = ABOUT_ENDPOINT
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val refreshMutex = Mutex()
@@ -73,14 +79,13 @@ class GoogleOAuthManager(
         AuthUiState(
             isSignedIn = session != null && session.refreshToken.isNotBlank(),
             accountEmail = session?.accountEmail.orEmpty(),
-            hasClientIdConfigured = BuildConfig.GOOGLE_OAUTH_CLIENT_ID.isNotBlank()
+            hasClientIdConfigured = clientId.isNotBlank()
         )
     }
 
-    fun isClientIdConfigured(): Boolean = BuildConfig.GOOGLE_OAUTH_CLIENT_ID.isNotBlank()
+    fun isClientIdConfigured(): Boolean = clientId.isNotBlank()
 
     suspend fun launchSignIn(activityContext: Context) {
-        val clientId = BuildConfig.GOOGLE_OAUTH_CLIENT_ID
         if (clientId.isBlank()) {
             _lastAuthError.value = "local.properties に GOOGLE_OAUTH_CLIENT_ID が設定されていません。"
             return
@@ -92,7 +97,7 @@ class GoogleOAuthManager(
         tokenStore.savePendingPkce(PendingPkceState(codeVerifier = codeVerifier, state = state))
 
         val codeChallenge = sha256Base64Url(codeVerifier)
-        val redirectUri = "${BuildConfig.OAUTH_REDIRECT_SCHEME}:/oauth2redirect"
+        val redirectUri = "$redirectScheme:/oauth2redirect"
 
         val authUri = AUTH_ENDPOINT.toUri().buildUpon()
             .appendQueryParameter("client_id", clientId)
@@ -111,25 +116,31 @@ class GoogleOAuthManager(
         customTabsIntent.launchUrl(activityContext, authUri)
     }
 
-    suspend fun handleRedirectUri(uri: Uri): Boolean = withContext(Dispatchers.IO) {
-        val error = uri.getQueryParameter("error")
+    suspend fun handleRedirectUri(uri: Uri): Boolean {
+        return handleRedirectParams(
+            code = uri.getQueryParameter("code"),
+            returnedState = uri.getQueryParameter("state"),
+            error = uri.getQueryParameter("error")
+        )
+    }
+
+    internal suspend fun handleRedirectParams(
+        code: String?,
+        returnedState: String?,
+        error: String?
+    ): Boolean = withContext(Dispatchers.IO) {
         if (!error.isNullOrBlank()) {
             _lastAuthError.value = "Google ログインがキャンセルまたは拒否されました ($error)"
             return@withContext false
         }
 
-        val code = uri.getQueryParameter("code")
-        val returnedState = uri.getQueryParameter("state")
         val pending = tokenStore.consumePendingPkce()
-
         if (code.isNullOrBlank() || pending == null || pending.state != returnedState) {
             _lastAuthError.value = "OAuth コールバックの検証に失敗しました。"
             return@withContext false
         }
 
-        val clientId = BuildConfig.GOOGLE_OAUTH_CLIENT_ID
-        val redirectUri = "${BuildConfig.OAUTH_REDIRECT_SCHEME}:/oauth2redirect"
-
+        val redirectUri = "$redirectScheme:/oauth2redirect"
         val form = FormBody.Builder()
             .add("client_id", clientId)
             .add("code", code)
@@ -139,32 +150,55 @@ class GoogleOAuthManager(
             .build()
 
         val request = Request.Builder()
-            .url(TOKEN_ENDPOINT)
+            .url(tokenEndpoint)
             .post(form)
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
-            val bodyStr = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val err = runCatching { json.decodeFromString<TokenErrorDto>(bodyStr) }.getOrNull()
-                _lastAuthError.value = "トークン取得失敗: ${err?.errorDescription ?: response.code}"
-                return@withContext false
-            }
+        try {
+            httpClient.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val err = runCatching { json.decodeFromString<TokenErrorDto>(bodyStr) }.getOrNull()
+                    _lastAuthError.value = "トークン取得失敗: ${err?.errorDescription ?: response.code}"
+                    return@withContext false
+                }
 
-            val tokenDto = json.decodeFromString<TokenResponseDto>(bodyStr)
-            val expiresAt = System.currentTimeMillis() + (tokenDto.expiresInSec * 1000L)
-            val email = fetchUserEmail(tokenDto.accessToken).orEmpty()
+                val tokenDto = json.decodeFromString<TokenResponseDto>(bodyStr)
+                val expiresAt = System.currentTimeMillis() + (tokenDto.expiresInSec * 1000L)
+                val email = fetchUserEmail(tokenDto.accessToken).orEmpty()
+                val existingSession = tokenStore.getSession()
+                val resolvedRefreshToken = tokenDto.refreshToken.orEmpty().ifBlank {
+                    if (existingSession != null &&
+                        existingSession.refreshToken.isNotBlank() &&
+                        (existingSession.accountEmail.isBlank() || email.isBlank() ||
+                            existingSession.accountEmail.equals(email, ignoreCase = true))
+                    ) {
+                        existingSession.refreshToken
+                    } else {
+                        ""
+                    }
+                }
+                if (resolvedRefreshToken.isBlank()) {
+                    _lastAuthError.value = "リフレッシュトークンが取得できませんでした。再度ログインをお試しください。"
+                    return@withContext false
+                }
 
-            tokenStore.saveSession(
-                StoredAuthSession(
-                    accessToken = tokenDto.accessToken,
-                    refreshToken = tokenDto.refreshToken.orEmpty(),
-                    expiresAtEpochMs = expiresAt,
-                    accountEmail = email
+                tokenStore.saveSession(
+                    StoredAuthSession(
+                        accessToken = tokenDto.accessToken,
+                        refreshToken = resolvedRefreshToken,
+                        expiresAtEpochMs = expiresAt,
+                        accountEmail = email.ifBlank { existingSession?.accountEmail.orEmpty() }
+                    )
                 )
-            )
-            _lastAuthError.value = null
-            true
+                _lastAuthError.value = null
+                true
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            _lastAuthError.value = "トークン取得通信エラー: ${e.message ?: e::class.java.simpleName}"
+            false
         }
     }
 
@@ -191,7 +225,7 @@ class GoogleOAuthManager(
         if (!tokenToRevoke.isNullOrBlank()) {
             runCatching {
                 val form = FormBody.Builder().add("token", tokenToRevoke).build()
-                val req = Request.Builder().url(REVOKE_ENDPOINT).post(form).build()
+                val req = Request.Builder().url(revokeEndpoint).post(form).build()
                 httpClient.newCall(req).execute().close()
             }
         }
@@ -200,7 +234,6 @@ class GoogleOAuthManager(
     }
 
     private suspend fun refreshAccessToken(session: StoredAuthSession): String = withContext(Dispatchers.IO) {
-        val clientId = BuildConfig.GOOGLE_OAUTH_CLIENT_ID
         val form = FormBody.Builder()
             .add("client_id", clientId)
             .add("refresh_token", session.refreshToken)
@@ -208,7 +241,7 @@ class GoogleOAuthManager(
             .build()
 
         val request = Request.Builder()
-            .url(TOKEN_ENDPOINT)
+            .url(tokenEndpoint)
             .post(form)
             .build()
 
@@ -216,7 +249,7 @@ class GoogleOAuthManager(
             val bodyStr = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 val err = runCatching { json.decodeFromString<TokenErrorDto>(bodyStr) }.getOrNull()
-                if (err?.error == "invalid_grant" || response.code == 400 || response.code == 401) {
+                if (err?.error == "invalid_grant" || err?.error == "unauthorized_client" || response.code == 401) {
                     tokenStore.clearSession()
                     throw AuthExpiredException("Google 認証の有効期限が切れました（再ログインが必要です）。")
                 }
@@ -242,7 +275,7 @@ class GoogleOAuthManager(
     private fun fetchUserEmail(accessToken: String): String? {
         return runCatching {
             val req = Request.Builder()
-                .url("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)")
+                .url(aboutEndpoint)
                 .header("Authorization", "Bearer $accessToken")
                 .build()
             httpClient.newCall(req).execute().use { resp ->
@@ -256,18 +289,19 @@ class GoogleOAuthManager(
     private fun generateRandomUrlSafe(byteCount: Int): String {
         val bytes = ByteArray(byteCount)
         SecureRandom().nextBytes(bytes)
-        return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
     }
 
     private fun sha256Base64Url(input: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.US_ASCII))
-        return Base64.encodeToString(digest, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
     }
 
     companion object {
         private const val AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
         private const val TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
         private const val REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
+        private const val ABOUT_ENDPOINT = "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)"
         private const val DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
     }
 }

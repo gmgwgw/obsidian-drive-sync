@@ -49,6 +49,7 @@ class CryptoManager(
         return String(plainBytes, Charsets.UTF_8)
     }
 
+    @Synchronized
     private fun getOrCreateSecretKey(): SecretKey {
         val existingEntry = keyStore.getEntry(keyAlias, null) as? KeyStore.SecretKeyEntry
         if (existingEntry != null) {

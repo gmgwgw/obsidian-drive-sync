@@ -42,6 +42,7 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     fun cancelSync() {
+        container.syncCoordinator.cancelCurrentSync()
         container.syncScheduler.cancelActiveSync()
     }
 

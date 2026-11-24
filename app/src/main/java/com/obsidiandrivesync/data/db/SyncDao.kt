@@ -36,6 +36,9 @@ interface SyncDao {
     @Query("DELETE FROM sync_logs")
     suspend fun clearLogs()
 
+    @Query("DELETE FROM sync_logs WHERE id NOT IN (SELECT id FROM sync_logs ORDER BY startedAtMs DESC LIMIT :keepCount)")
+    suspend fun pruneOldLogs(keepCount: Int = 500)
+
     @Insert
     suspend fun insertConflicts(conflicts: List<ConflictEntity>)
 
@@ -47,4 +50,7 @@ interface SyncDao {
 
     @Query("UPDATE conflicts SET acknowledged = 1")
     suspend fun acknowledgeAllConflicts()
+
+    @Query("DELETE FROM conflicts WHERE acknowledged = 1 AND id NOT IN (SELECT id FROM conflicts WHERE acknowledged = 1 ORDER BY detectedAtMs DESC LIMIT :keepCount)")
+    suspend fun pruneOldAcknowledgedConflicts(keepCount: Int = 200)
 }
