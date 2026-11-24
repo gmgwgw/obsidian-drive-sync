@@ -1,6 +1,7 @@
 package com.obsidiandrivesync.ui.picker
 
 import android.os.Environment
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +20,7 @@ import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -30,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -40,8 +43,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.obsidiandrivesync.AppContainer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+
+private data class LocalFolderEntry(
+    val file: File,
+    val isObsidianVault: Boolean
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,15 +66,33 @@ fun LocalFolderPickerScreen(
     var refreshTrigger by remember { mutableIntStateOf(0) }
     var showCreateDialog by remember { mutableStateOf(false) }
 
-    val subDirs = remember(currentDir, refreshTrigger) {
-        currentDir.listFiles()
-            ?.filter { it.isDirectory && !it.name.startsWith(".") }
-            ?.sortedBy { it.name.lowercase() }
-            .orEmpty()
+    var subDirs by remember { mutableStateOf<List<LocalFolderEntry>>(emptyList()) }
+    var hasObsidianConfig by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    BackHandler(enabled = currentDir != storageRoot) {
+        val parent = currentDir.parentFile
+        if (parent != null) {
+            currentDir = parent
+        } else {
+            onBack()
+        }
     }
 
-    val hasObsidianConfig = remember(currentDir, refreshTrigger) {
-        File(currentDir, ".obsidian").isDirectory
+    LaunchedEffect(currentDir, refreshTrigger) {
+        isLoading = true
+        val (vaultDetected, entries) = withContext(Dispatchers.IO) {
+            val detected = File(currentDir, ".obsidian").isDirectory
+            val list = currentDir.listFiles()
+                ?.filter { it.isDirectory && !it.name.startsWith(".") }
+                ?.sortedBy { it.name.lowercase() }
+                ?.map { dir -> LocalFolderEntry(dir, File(dir, ".obsidian").isDirectory) }
+                .orEmpty()
+            detected to list
+        }
+        hasObsidianConfig = vaultDetected
+        subDirs = entries
+        isLoading = false
     }
 
     Scaffold(
@@ -146,35 +174,44 @@ fun LocalFolderPickerScreen(
             }
             HorizontalDivider()
 
-            if (subDirs.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("サブフォルダがありません", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            when {
+                isLoading -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
                 }
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(subDirs, key = { it.absolutePath }) { dir ->
-                        val isVault = File(dir, ".obsidian").isDirectory
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { currentDir = dir }
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text(dir.name, style = MaterialTheme.typography.bodyLarge)
-                                if (isVault) {
-                                    Text(
-                                        "Obsidian Vault",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary
-                                    )
+                subDirs.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("サブフォルダがありません", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                else -> {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(subDirs, key = { it.file.absolutePath }) { entry ->
+                            val dir = entry.file
+                            val isVault = entry.isObsidianVault
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { currentDir = dir }
+                                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text(dir.name, style = MaterialTheme.typography.bodyLarge)
+                                    if (isVault) {
+                                        Text(
+                                            "Obsidian Vault",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
                                 }
                             }
+                            HorizontalDivider()
                         }
-                        HorizontalDivider()
                     }
                 }
             }
@@ -183,27 +220,53 @@ fun LocalFolderPickerScreen(
 
     if (showCreateDialog) {
         var folderName by remember { mutableStateOf("") }
+        var folderError by remember { mutableStateOf<String?>(null) }
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
             title = { Text("新規フォルダを作成") },
             text = {
-                OutlinedTextField(
-                    value = folderName,
-                    onValueChange = { folderName = it },
-                    label = { Text("フォルダ名") },
-                    singleLine = true
-                )
+                Column {
+                    OutlinedTextField(
+                        value = folderName,
+                        onValueChange = {
+                            folderName = it
+                            folderError = null
+                        },
+                        label = { Text("フォルダ名") },
+                        singleLine = true,
+                        isError = folderError != null
+                    )
+                    if (folderError != null) {
+                        Text(
+                            text = folderError!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
             },
             confirmButton = {
                 Button(onClick = {
                     val trimmed = folderName.trim()
-                    if (trimmed.isNotEmpty()) {
-                        val newDir = File(currentDir, trimmed)
-                        if (newDir.mkdirs() || newDir.isDirectory) {
-                            currentDir = newDir
-                            refreshTrigger++
+                    if (trimmed.isEmpty() || trimmed == "." || trimmed == ".." ||
+                        trimmed.contains('/') || trimmed.contains('\\')
+                    ) {
+                        folderError = "有効なフォルダ名を入力してください（/ や \\、.. は使用できません）"
+                        return@Button
+                    }
+                    scope.launch {
+                        val created = withContext(Dispatchers.IO) {
+                            val newDir = File(currentDir, trimmed)
+                            if (newDir.mkdirs() || newDir.isDirectory) newDir else null
                         }
-                        showCreateDialog = false
+                        if (created != null) {
+                            currentDir = created
+                            refreshTrigger++
+                            showCreateDialog = false
+                        } else {
+                            folderError = "フォルダの作成に失敗しました"
+                        }
                     }
                 }) {
                     Text("作成")

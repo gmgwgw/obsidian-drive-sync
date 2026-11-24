@@ -10,7 +10,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +49,7 @@ fun SyncLogsScreen(container: AppContainer) {
         .collectAsStateWithLifecycle(initialValue = emptyList())
     val scope = rememberCoroutineScope()
     var selectedLog by remember { mutableStateOf<SyncLogEntity?>(null) }
+    var showClearConfirm by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -53,7 +57,7 @@ fun SyncLogsScreen(container: AppContainer) {
                 title = { Text("同期履歴") },
                 actions = {
                     if (logs.isNotEmpty()) {
-                        TextButton(onClick = { scope.launch { container.syncDao.clearLogs() } }) {
+                        TextButton(onClick = { showClearConfirm = true }) {
                             Text("履歴をクリア")
                         }
                     }
@@ -92,7 +96,10 @@ fun SyncLogsScreen(container: AppContainer) {
             onDismissRequest = { selectedLog = null },
             title = { Text("同期詳細 (${formatStatusLabel(log.status)})") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     Text("完了時刻: $timeStr", style = MaterialTheme.typography.bodySmall)
                     Text("トリガー: ${formatTriggerLabel(log.triggerSource)}", style = MaterialTheme.typography.bodySmall)
                     Text("所要時間: ${String.format(Locale.US, "%.1f", durationSec)} 秒", style = MaterialTheme.typography.bodySmall)
@@ -116,6 +123,25 @@ fun SyncLogsScreen(container: AppContainer) {
             },
             confirmButton = {
                 TextButton(onClick = { selectedLog = null }) { Text("閉じる") }
+            }
+        )
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("同期履歴をクリア") },
+            text = { Text("すべての同期履歴を削除しますか？") },
+            confirmButton = {
+                Button(onClick = {
+                    showClearConfirm = false
+                    scope.launch { container.syncDao.clearLogs() }
+                }) {
+                    Text("削除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) { Text("キャンセル") }
             }
         )
     }

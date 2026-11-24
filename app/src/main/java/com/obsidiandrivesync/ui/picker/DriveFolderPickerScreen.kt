@@ -1,5 +1,6 @@
 package com.obsidiandrivesync.ui.picker
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,6 +33,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,24 +61,23 @@ fun DriveFolderPickerScreen(
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
+    var refreshTrigger by remember { mutableIntStateOf(0) }
 
-    fun loadChildren(folderId: String) {
-        scope.launch {
-            isLoading = true
-            errorMessage = null
-            runCatching {
-                container.driveClient.listChildFolders(folderId)
-            }.onSuccess { list ->
-                children = list
-            }.onFailure { err ->
-                errorMessage = err.message ?: "フォルダ一覧の取得に失敗しました"
-            }
-            isLoading = false
-        }
+    BackHandler(enabled = navStack.size > 1) {
+        navStack.removeAt(navStack.lastIndex)
     }
 
-    LaunchedEffect(currentFolder.id) {
-        loadChildren(currentFolder.id)
+    LaunchedEffect(currentFolder.id, refreshTrigger) {
+        isLoading = true
+        errorMessage = null
+        runCatching {
+            container.driveClient.listChildFolders(currentFolder.id)
+        }.onSuccess { list ->
+            children = list
+        }.onFailure { err ->
+            errorMessage = err.message ?: "フォルダ一覧の取得に失敗しました"
+        }
+        isLoading = false
     }
 
     Scaffold(
@@ -162,7 +163,7 @@ fun DriveFolderPickerScreen(
                         verticalArrangement = Arrangement.Center
                     ) {
                         Text(errorMessage!!, color = MaterialTheme.colorScheme.error)
-                        TextButton(onClick = { loadChildren(currentFolder.id) }) {
+                        TextButton(onClick = { refreshTrigger++ }) {
                             Text("再試行")
                         }
                     }
@@ -217,7 +218,9 @@ fun DriveFolderPickerScreen(
                                 runCatching {
                                     container.driveClient.createFolder(currentFolder.id, trimmed)
                                 }.onSuccess {
-                                    loadChildren(currentFolder.id)
+                                    refreshTrigger++
+                                }.onFailure { err ->
+                                    errorMessage = err.message ?: "フォルダの作成に失敗しました"
                                 }
                             }
                         }
